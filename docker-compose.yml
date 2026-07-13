@@ -1,0 +1,134 @@
+# =============================================================
+# MediCore — docker-compose.yml
+# Day 1: postgres + main-website only.
+# Uncomment service stanzas on the relevant build days.
+# =============================================================
+volumes:
+  postgres_data:
+networks:
+  medicore_net:
+    driver: bridge
+services:
+  # ===========================================================
+  # PostgreSQL with pgvector extension
+  # The pgvector/pgvector:pg16 image ships with the vector
+  # extension pre-installed — no extra apt-get needed.
+  # Mounted init scripts run in alphabetical order on first
+  # startup only (i.e., when the volume is empty).
+  # ===========================================================
+  postgres:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: medicore
+      POSTGRES_PASSWORD: medicore_dev
+      POSTGRES_DB: medicore
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./db/schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
+      - ./db/seed.sql:/docker-entrypoint-initdb.d/02_seed.sql:ro
+    networks:
+      - medicore_net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U medicore -d medicore"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+  # ===========================================================
+  # main-website — auth + API gateway
+  # Port 4000 — the ONLY public entry point in production.
+  # ===========================================================
+  main-website:
+    build:
+      context: ./main-website
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "4000:4000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - medicore_net
+  # ===========================================================
+  # Uncomment on Day 2 when patient-service is implemented.
+  # ===========================================================
+  # patient-service:
+  #   build:
+  #     context: ./patient-service
+  #     dockerfile: Dockerfile
+  #   restart: unless-stopped
+  #   env_file: .env
+  #   ports:
+  #     - "4001:4001"
+  #   depends_on:
+  #     postgres:
+  #       condition: service_healthy
+  #   networks:
+  #     - medicore_net
+  # ===========================================================
+  # Uncomment on Day 2 when doctor-service is implemented.
+  # ===========================================================
+  # doctor-service:
+  #   build:
+  #     context: ./doctor-service
+  #     dockerfile: Dockerfile
+  #   restart: unless-stopped
+  #   env_file: .env
+  #   ports:
+  #     - "4002:4002"
+  #   depends_on:
+  #     postgres:
+  #       condition: service_healthy
+  #   networks:
+  #     - medicore_net
+  # ===========================================================
+  # Uncomment on Day 2 when cashier-service is implemented.
+  # ===========================================================
+  # cashier-service:
+  #   build:
+  #     context: ./cashier-service
+  #     dockerfile: Dockerfile
+  #   restart: unless-stopped
+  #   env_file: .env
+  #   ports:
+  #     - "4003:4003"
+  #   depends_on:
+  #     postgres:
+  #       condition: service_healthy
+  #   networks:
+  #     - medicore_net
+  # ===========================================================
+  # Uncomment on Day 5 when ai-service is implemented.
+  # ===========================================================
+  # ai-service:
+  #   build:
+  #     context: ./ai-service
+  #     dockerfile: Dockerfile
+  #   restart: unless-stopped
+  #   env_file: .env
+  #   ports:
+  #     - "5000:5000"
+  #   depends_on:
+  #     postgres:
+  #       condition: service_healthy
+  #   networks:
+  #     - medicore_net
+  # ===========================================================
+  # Uncomment on Day 3 when frontend build is ready.
+  # ===========================================================
+  # frontend:
+  #   build:
+  #     context: ./frontend
+  #     dockerfile: Dockerfile
+  #   restart: unless-stopped
+  #   ports:
+  #     - "5173:80"   # nginx serves the built React app on port 80 inside container
+  #   depends_on:
+  #     - main-website
+  #   networks:
+  #     - medicore_net
