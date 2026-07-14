@@ -1,7 +1,7 @@
 {
     "name": "patient-service",
     "version": "1.0.0",
-    "description": "MediCore patient-service — patient profiles, appointment booking (Day 2)",
+    "description": "MediCore patient-service — patient profiles, appointment booking",
     "main": "src/index.js",
     "scripts": {
         "start": "node src/index.js",
@@ -12,6 +12,7 @@
         "dotenv": "^16.4.5",
         "express": "^4.19.2",
         "jsonwebtoken": "^9.0.2",
+        "multer": "^1.4.5-lts.1",
         "pg": "^8.12.0",
         "zod": "^3.23.8"
     },

@@ -1,5 +1,5 @@
 # =====================================================================
-# main-website — multi-stage Dockerfile
+# cashier-service — multi-stage Dockerfile
 # Stage 1 (deps): install production dependencies only
 # Stage 2 (runtime): copy source + deps, run as non-root
 # =====================================================================
@@ -17,7 +17,7 @@ COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 RUN chown -R medicore:medicore /app
 USER medicore
-EXPOSE 4000
+EXPOSE 4003
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD wget -qO- http://localhost:4000/health || exit 1
+  CMD wget -qO- http://localhost:4003/health || exit 1
 CMD ["node", "src/index.js"]

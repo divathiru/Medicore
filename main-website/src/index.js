@@ -52,11 +52,9 @@ function makeProxy(targetEnvVar, pathPrefix) {
     return createProxyMiddleware({
         target,
         changeOrigin: true,
-        on: {
-            error: (err, _req, res) => {
-                console.error(`[proxy → ${target}]`, err.message);
-                res.status(502).json({ error: 'Upstream service error.' });
-            },
+        onError: (err, _req, res) => {
+            console.error(`[proxy → ${target}]`, err.message);
+            res.status(502).json({ error: 'Upstream service error.' });
         },
     });
 }

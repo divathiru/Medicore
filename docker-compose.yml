@@ -5,6 +5,7 @@
 # =============================================================
 volumes:
   postgres_data:
+  uploads_data:
 networks:
   medicore_net:
     driver: bridge
@@ -55,53 +56,61 @@ services:
     networks:
       - medicore_net
   # ===========================================================
-  # Uncomment on Day 2 when patient-service is implemented.
+  # patient-service — patient profiles, appointment booking
   # ===========================================================
-  # patient-service:
-  #   build:
-  #     context: ./patient-service
-  #     dockerfile: Dockerfile
-  #   restart: unless-stopped
-  #   env_file: .env
-  #   ports:
-  #     - "4001:4001"
-  #   depends_on:
-  #     postgres:
-  #       condition: service_healthy
-  #   networks:
-  #     - medicore_net
+  patient-service:
+    build:
+      context: ./patient-service
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      PORT: "4001"
+    ports:
+      - "4001:4001"
+    volumes:
+      - uploads_data:/uploads
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - medicore_net
   # ===========================================================
-  # Uncomment on Day 2 when doctor-service is implemented.
+  # doctor-service — appointment queue, prescriptions
   # ===========================================================
-  # doctor-service:
-  #   build:
-  #     context: ./doctor-service
-  #     dockerfile: Dockerfile
-  #   restart: unless-stopped
-  #   env_file: .env
-  #   ports:
-  #     - "4002:4002"
-  #   depends_on:
-  #     postgres:
-  #       condition: service_healthy
-  #   networks:
-  #     - medicore_net
+  doctor-service:
+    build:
+      context: ./doctor-service
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      PORT: "4002"
+    ports:
+      - "4002:4002"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - medicore_net
   # ===========================================================
-  # Uncomment on Day 2 when cashier-service is implemented.
+  # cashier-service — payments, queue position assignment
   # ===========================================================
-  # cashier-service:
-  #   build:
-  #     context: ./cashier-service
-  #     dockerfile: Dockerfile
-  #   restart: unless-stopped
-  #   env_file: .env
-  #   ports:
-  #     - "4003:4003"
-  #   depends_on:
-  #     postgres:
-  #       condition: service_healthy
-  #   networks:
-  #     - medicore_net
+  cashier-service:
+    build:
+      context: ./cashier-service
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      PORT: "4003"
+    ports:
+      - "4003:4003"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - medicore_net
   # ===========================================================
   # Uncomment on Day 5 when ai-service is implemented.
   # ===========================================================
