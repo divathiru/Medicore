@@ -77,6 +77,9 @@ def _insert_embeddings(
     """
     Bulk-insert (chunk, embedding) pairs into public.embeddings.
     Returns the count of rows inserted.
+
+    NOTE: psycopg3 Connection has no .executemany() method — that lives on
+    Cursor only.  We open an explicit cursor here to call it.
     """
     rows = []
     for chunk, vector in zip(chunks, vectors):
@@ -86,14 +89,16 @@ def _insert_embeddings(
         vec_str = "[" + ",".join(str(v) for v in vector) + "]"
         rows.append((row_id, namespace, patient_id, chunk, vec_str, json.dumps(meta)))
 
-    conn.executemany(
-        """
-        INSERT INTO public.embeddings
-            (id, namespace, patient_id, content, embedding, metadata)
-        VALUES (%s, %s, %s, %s, %s::vector, %s::jsonb)
-        """,
-        rows,
-    )
+    # Use an explicit cursor — psycopg3 Connection does not expose executemany()
+    with conn.cursor() as cur:
+        cur.executemany(
+            """
+            INSERT INTO public.embeddings
+                (id, namespace, patient_id, content, embedding, metadata)
+            VALUES (%s, %s, %s, %s, %s::vector, %s::jsonb)
+            """,
+            rows,
+        )
     return len(rows)
 
 

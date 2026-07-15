@@ -81,11 +81,32 @@ app.use(
 );
 // /ai/chat/public is intentionally public — no JWT required.
 // /ai/chat/patient and /ai/ingest/* require a valid JWT.
-app.use('/ai/chat/public', makeProxy('AI_SERVICE_URL', '/ai/chat/public'));
+// NOTE: ai-service routes are /chat/* and /ingest/* (no /ai prefix).
+// pathRewrite strips the leading /ai before forwarding to the upstream.
+app.use(
+    '/ai/chat/public',
+    createProxyMiddleware({
+        target: process.env.AI_SERVICE_URL || '',
+        changeOrigin: true,
+        pathRewrite: { '^/ai': '' },
+        onError: (err, _req, res) => {
+            console.error('[proxy → ai-service]', err.message);
+            res.status(502).json({ error: 'Upstream service error.' });
+        },
+    })
+);
 app.use(
     '/ai',
     verifyAnyRole,
-    makeProxy('AI_SERVICE_URL', '/ai')
+    createProxyMiddleware({
+        target: process.env.AI_SERVICE_URL || '',
+        changeOrigin: true,
+        pathRewrite: { '^/ai': '' },
+        onError: (err, _req, res) => {
+            console.error('[proxy → ai-service]', err.message);
+            res.status(502).json({ error: 'Upstream service error.' });
+        },
+    })
 );
 // ─── 404 fallback ─────────────────────────────────────────────────────────────
 app.use((_req, res) => res.status(404).json({ error: 'Route not found.' }));
