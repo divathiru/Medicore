@@ -171,16 +171,19 @@ router.post('/me/patients/:patientId/prescriptions', requireRole('doctor'), asyn
 
         await client.query('COMMIT');
 
-        // TODO (Day 5): POST prescription text to ai-service for RAG ingestion
-        const aiPayload = {
-            patient_id: patientId,
-            text: `${doctor_summary}\n\nPrescription:\n${prescription_text}`,
-        };
-        console.log(
-            '[TODO ai-service] Would POST to',
-            `${process.env.AI_SERVICE_URL}/ingest/patient/${patientId}`,
-            'with payload:',
-            JSON.stringify(aiPayload)
+        // Fire-and-forget: POST prescription text to ai-service for RAG ingestion.
+        // Non-blocking — DB write already committed; ingest failure is logged but
+        // does NOT roll back the prescription.
+        const aiIngestUrl = `${process.env.AI_SERVICE_URL}/ingest/patient/${patientId}`;
+        fetch(aiIngestUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                text: `${doctor_summary}\n\nPrescription:\n${prescription_text}`,
+                source: 'doctor_prescription',
+            }),
+        }).catch((err) =>
+            console.error('[ai-service ingest] Failed to ingest prescription:', err.message)
         );
 
         return res.status(201).json(rows[0]);
@@ -193,14 +196,71 @@ router.post('/me/patients/:patientId/prescriptions', requireRole('doctor'), asyn
     }
 });
 
-// ─── POST /doctors/me/patients/:patientId/ask ─────────────────────────────────
-// AI stub — returns 501 until Day 5 when ai-service is integrated.
-// The frontend can wire the "Ask AI" button to this endpoint now; it will
-// receive a clear not-yet-implemented response rather than crashing.
-router.post('/me/patients/:patientId/ask', requireRole('doctor'), (_req, res) => {
-    return res.status(501).json({
-        error: 'ai-service not yet integrated, see Day 3.',
-    });
+// ─── POST /doctors/me/patients/:patientId/ask ────────────────────────────────
+// Proxies to ai-service POST /chat/patient.
+// Auth layering:
+//   1. Gateway: valid JWT required.
+//   2. Here: requireRole('doctor') + appointment-relationship check (SQL WHERE EXISTS).
+//   3. ai-service: SQL WHERE namespace='patient' AND patient_id=:id (cannot be overridden).
+const askSchema = require('zod').object({
+    question: require('zod').string().min(1, 'question is required.').max(2000),
+});
+
+router.post('/me/patients/:patientId/ask', requireRole('doctor'), async (req, res) => {
+    const { patientId } = req.params;
+
+    // Validate request body
+    const parsed = askSchema.safeParse(req.body);
+    if (!parsed.success) {
+        return res.status(400).json({ error: parsed.error.errors[0].message });
+    }
+    const { question } = parsed.data;
+
+    // Verify doctor has an appointment with this patient (same guard as GET /me/patients/:patientId)
+    try {
+        const authCheck = await pool.query(
+            `SELECT 1
+             FROM appointments.appointments
+             WHERE doctor_id  = $1
+               AND patient_id = $2
+               AND status     != 'cancelled'
+             LIMIT 1`,
+            [req.user.sub, patientId]
+        );
+        if (authCheck.rows.length === 0) {
+            return res.status(403).json({
+                error: 'Access denied. No appointment relationship with this patient.',
+            });
+        }
+    } catch (err) {
+        console.error('[POST /doctors/me/patients/:patientId/ask] DB check failed:', err.message);
+        return res.status(500).json({ error: 'Internal server error.' });
+    }
+
+    // Audit log (doctor_id visible here; patient_id echoed in ai-service log)
+    console.log(
+        `[AUDIT /ask] doctor_id=${req.user.sub} patient_id=${patientId} question=${JSON.stringify(question)}`
+    );
+
+    // Forward to ai-service
+    const aiUrl = `${process.env.AI_SERVICE_URL}/chat/patient`;
+    try {
+        const aiRes = await fetch(aiUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ patient_id: patientId, question }),
+        });
+        const data = await aiRes.json();
+        if (!aiRes.ok) {
+            return res.status(aiRes.status).json({
+                error: data.detail || data.error || 'ai-service error.',
+            });
+        }
+        return res.json(data);
+    } catch (err) {
+        console.error('[POST /doctors/me/patients/:patientId/ask] ai-service unreachable:', err.message);
+        return res.status(502).json({ error: 'AI service is currently unavailable.' });
+    }
 });
 
 module.exports = router;

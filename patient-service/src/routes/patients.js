@@ -131,17 +131,19 @@ router.post(
                  RETURNING id, patient_id, source_hospital, file_url, extracted_text, uploaded_at`,
                 [req.user.sub, source_hospital ?? null, file_url, extracted_text]
             );
-            // TODO (Day 5): send to ai-service for RAG ingestion
-            const aiPayload = {
-                patient_id: req.user.sub,
-                text: extracted_text,
-                source: source_hospital,
-            };
-            console.log(
-                '[TODO ai-service] Would POST to',
-                `${process.env.AI_SERVICE_URL}/ingest/patient/${req.user.sub}`,
-                'with payload:',
-                JSON.stringify(aiPayload)
+            // Fire-and-forget: POST extracted text to ai-service for RAG ingestion.
+            // Non-blocking — DB insert already done; ingest failure is logged but
+            // does NOT fail this endpoint.
+            const aiIngestUrl = `${process.env.AI_SERVICE_URL}/ingest/patient/${req.user.sub}`;
+            fetch(aiIngestUrl, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    text: extracted_text,
+                    source: source_hospital || 'patient_upload',
+                }),
+            }).catch((err) =>
+                console.error('[ai-service ingest] Failed to ingest patient summary:', err.message)
             );
             return res.status(201).json(rows[0]);
         } catch (err) {
