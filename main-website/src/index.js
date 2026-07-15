@@ -1,8 +1,3 @@
-// src/index.js
-// MediCore — main-website
-// Dual role: auth service (signup/login/me) + API gateway (proxy to downstream
-// services). All downstream service stanzas are wired now; their docker-compose
-// entries are commented-out. Day 2 only needs to uncomment those stanzas.
 'use strict';
 require('dotenv').config();
 const express = require('express');
@@ -23,29 +18,35 @@ const app = express();
 // ─── Global middleware ────────────────────────────────────────────────────────
 // Rate limiting: 100 requests per minute per IP
 const limiter = rateLimit({
-    windowMs: 60 * 1000,      // 1 minute
+    windowMs: 60 * 1000,
     max: 100,
-    standardHeaders: true,    // Return rate limit info in the `RateLimit-*` headers
+    standardHeaders: true,
     legacyHeaders: false,
     message: { error: 'Too many requests. Please try again later.' },
 });
 app.use(limiter);
-app.use(express.json({ limit: '2mb' }));
+
+// IMPORTANT: Do NOT apply express.json() globally.
+// If the gateway parses the body stream, the proxy can no longer forward it
+// (the stream is already drained → "request aborted" at the upstream).
+// JSON parsing is applied ONLY to the /auth router which handles its own body.
+// All proxy routes forward the raw bytes directly to the upstream service.
+
 // ─── Health check ─────────────────────────────────────────────────────────────
 app.get('/health', (_req, res) => res.json({ status: 'ok' }));
 // ─── Auth routes (public — no JWT needed for signup/login) ───────────────────
-app.use('/auth', authRouter);
+// Auth routes need body parsing — apply express.json() only here.
+app.use('/auth', express.json({ limit: '2mb' }), authRouter);
 // ─── Proxy helpers ────────────────────────────────────────────────────────────
-// http-proxy-middleware v3 requires explicit changeOrigin + pathFilter/router.
-// The proxy for each service is defined here so Day 2 only needs to uncomment
-// the docker-compose stanzas — zero code changes required here.
+// http-proxy-middleware v2: changeOrigin + onProxyReq + onError.
+// onProxyReq is required to forward the Content-Type + Content-Length headers
+// correctly when the upstream expects a JSON body.
 function makeProxy(targetEnvVar, pathPrefix) {
     const target = process.env[targetEnvVar];
     if (!target) {
         console.warn(
             `[proxy] ${targetEnvVar} is not set — requests to ${pathPrefix}/* will return 503.`
         );
-        // Return a stub that sends a service-unavailable response.
         return (_req, res) =>
             res.status(503).json({ error: `${pathPrefix} service is not available yet.` });
     }
