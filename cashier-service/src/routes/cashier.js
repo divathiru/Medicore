@@ -160,4 +160,38 @@ router.get(
     }
 );
 
+// ─── GET /cashier/appointments?status= ───────────────────────────────────────
+// Returns appointments with real IDs for cashier payment processing.
+// Defaults to status=booked; cashier role required.
+router.get('/appointments', requireRole('cashier'), async (req, res) => {
+    const status = req.query.status || 'booked';
+    const date = req.query.date || null;
+    try {
+        const { rows } = await pool.query(
+            `SELECT a.id,
+                    a.patient_id,
+                    a.doctor_id,
+                    a.scheduled_date,
+                    a.status,
+                    a.queue_position,
+                    a.created_at,
+                    p.full_name  AS patient_name,
+                    d.full_name  AS doctor_name,
+                    d.department AS doctor_department
+             FROM appointments.appointments a
+             JOIN patients.patients p  ON p.id = a.patient_id
+             JOIN doctors.doctors   d  ON d.id = a.doctor_id
+             WHERE a.status = $1
+               AND ($2::date IS NULL OR a.scheduled_date = $2::date)
+             ORDER BY a.scheduled_date DESC, a.created_at DESC`,
+            [status, date]
+        );
+        return res.json(rows);
+    } catch (err) {
+        console.error('[GET /cashier/appointments]', err.message);
+        return res.status(500).json({ error: 'Internal server error.' });
+    }
+});
+
 module.exports = router;
+

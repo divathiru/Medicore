@@ -30,6 +30,7 @@ router.get('/me/appointments', requireRole('doctor'), async (req, res) => {
     try {
         const { rows } = await pool.query(
             `SELECT a.id,
+                    p.id             AS patient_id,
                     p.full_name      AS patient_name,
                     a.queue_position,
                     a.status,

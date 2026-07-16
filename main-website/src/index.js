@@ -1,10 +1,12 @@
 'use strict';
 require('dotenv').config();
 const express = require('express');
+const cors = require('cors');
 const rateLimit = require('express-rate-limit');
 const { createProxyMiddleware } = require('http-proxy-middleware');
 const authRouter = require('./routes/auth');
 const requireRole = require('./middleware/requireRole');
+const pool = require('./db/pool');
 // ─── Validate required env vars early ────────────────────────────────────────
 const REQUIRED_ENV = ['PORT', 'DATABASE_URL', 'JWT_SECRET'];
 REQUIRED_ENV.forEach((key) => {
@@ -26,6 +28,17 @@ const limiter = rateLimit({
 });
 app.use(limiter);
 
+// CORS — allow the React frontend (any localhost origin in dev, nginx in prod)
+app.use(cors({
+    origin: [
+        'http://localhost:5173',
+        'http://localhost:4173',
+        'http://127.0.0.1:5173',
+        /^http:\/\/localhost:\d+$/,
+    ],
+    credentials: true,
+}));
+
 // IMPORTANT: Do NOT apply express.json() globally.
 // If the gateway parses the body stream, the proxy can no longer forward it
 // (the stream is already drained → "request aborted" at the upstream).
@@ -34,6 +47,20 @@ app.use(limiter);
 
 // ─── Health check ─────────────────────────────────────────────────────────────
 app.get('/health', (_req, res) => res.json({ status: 'ok' }));
+// ─── Public: doctor listing for marketing page (no JWT required) ──────────────
+app.get('/doctors', async (_req, res) => {
+    try {
+        const { rows } = await pool.query(
+            `SELECT d.id, d.full_name, d.department, d.experience_years, d.bio
+             FROM doctors.doctors d
+             ORDER BY d.full_name ASC`
+        );
+        return res.json(rows);
+    } catch (err) {
+        console.error('[GET /doctors public]', err.message);
+        return res.status(500).json({ error: 'Internal server error.' });
+    }
+});
 // ─── Auth routes (public — no JWT needed for signup/login) ───────────────────
 // Auth routes need body parsing — apply express.json() only here.
 app.use('/auth', express.json({ limit: '2mb' }), authRouter);

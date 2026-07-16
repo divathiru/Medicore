@@ -135,16 +135,22 @@ services:
     networks:
       - medicore_net
   # ===========================================================
-  # Uncomment on Day 3 when frontend build is ready.
+  # Frontend — React/Vite built by nginx
+  # Port 5173 on the host, port 80 inside the container.
   # ===========================================================
-  # frontend:
-  #   build:
-  #     context: ./frontend
-  #     dockerfile: Dockerfile
-  #   restart: unless-stopped
-  #   ports:
-  #     - "5173:80"   # nginx serves the built React app on port 80 inside container
-  #   depends_on:
-  #     - main-website
-  #   networks:
-  #     - medicore_net
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        # At docker-compose build time, VITE_API_BASE_URL must be reachable
+        # from the browser (not from inside the Docker network).
+        # localhost:4000 works for a local demo where the gateway is port-mapped.
+        VITE_API_BASE_URL: http://localhost:4000
+    restart: unless-stopped
+    ports:
+      - "5173:80"   # nginx serves the built React app on port 80 inside container
+    depends_on:
+      - main-website
+    networks:
+      - medicore_net
