@@ -4,14 +4,24 @@ app/routers/ingest.py — RAG ingestion endpoints.
 POST /ingest/hospital-docs
     Body: { text: str, section_name: str? }
     Chunks + embeds the given text with namespace='public'.
-    Called once (or occasionally) by an admin to load static hospital content.
+    Called once (or occasionally) to load static hospital content.
+
+POST /ingest/hospital-docs/upload
+    Multipart: one or more PDF files (field name: "files").
+    Extracts text from each PDF with pymupdf, chunks + embeds each,
+    returns per-file results.  Use this to bulk-ingest the 10 hospital PDFs.
 
 POST /ingest/patient/{patient_id}
     Body: { text: str, source: str? }
     Chunks + embeds the given text with namespace='patient', patient_id set.
-    Called by patient-service (summary upload) and doctor-service (prescription).
+    Called by patient-service (text paste) and doctor-service (prescription).
 
-Both endpoints:
+POST /ingest/patient/{patient_id}/upload
+    Multipart: a single PDF/image file (field name: "file").
+    Extracts text from the uploaded file with pymupdf, then ingest as patient
+    namespace.  Called by patient-service when a patient uploads a file.
+
+Both JSON endpoints:
   - Validate input with Pydantic.
   - Chunk with app.chunker.chunk_text.
   - Embed with app.embeddings.embed_texts.
@@ -21,21 +31,65 @@ Both endpoints:
 
 from __future__ import annotations
 
-import json
 import uuid
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException
+import fitz  # pymupdf
+from fastapi import APIRouter, File, HTTPException, UploadFile
 from pydantic import BaseModel, field_validator
 
-from app.chunker import chunk_text
 from app.db import get_conn
-from app.embeddings import embed_texts
+from app.ingestion import ingest_text_direct
 
 router = APIRouter()
 
+
 # --------------------------------------------------------------------------- #
-# Request models
+# Helpers
+# --------------------------------------------------------------------------- #
+
+def _extract_pdf_text(file_bytes: bytes) -> str:
+    """
+    Extract all text from a PDF (or image) using pymupdf.
+    Falls back gracefully — returns empty string if extraction fails.
+    """
+    try:
+        doc = fitz.open(stream=file_bytes, filetype="pdf")
+        pages = []
+        for page in doc:
+            pages.append(page.get_text("text"))
+        doc.close()
+        return "\n\n".join(pages).strip()
+    except Exception as exc:
+        raise ValueError(f"PDF text extraction failed: {exc}") from exc
+
+
+def _ingest_text(
+    text: str,
+    namespace: str,
+    patient_id: Optional[str],
+    extra_meta: dict,
+) -> int:
+    """Thin FastAPI wrapper: delegates to app.ingestion.ingest_text_direct."""
+    try:
+        with get_conn() as conn:
+            return ingest_text_direct(
+                conn=conn,
+                text=text,
+                namespace=namespace,
+                patient_id=patient_id,
+                extra_meta=extra_meta,
+            )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Database error: {exc}") from exc
+
+
+# --------------------------------------------------------------------------- #
+# Request models (JSON endpoints)
 # --------------------------------------------------------------------------- #
 
 class HospitalDocsRequest(BaseModel):
@@ -63,77 +117,21 @@ class PatientIngestRequest(BaseModel):
 
 
 # --------------------------------------------------------------------------- #
-# Shared helper
-# --------------------------------------------------------------------------- #
-
-def _insert_embeddings(
-    conn,
-    namespace: str,
-    patient_id: Optional[str],
-    chunks: list[str],
-    vectors: list[list[float]],
-    extra_meta: dict,
-) -> int:
-    """
-    Bulk-insert (chunk, embedding) pairs into public.embeddings.
-    Returns the count of rows inserted.
-
-    NOTE: psycopg3 Connection has no .executemany() method — that lives on
-    Cursor only.  We open an explicit cursor here to call it.
-    """
-    rows = []
-    for chunk, vector in zip(chunks, vectors):
-        row_id = str(uuid.uuid4())
-        meta = {**extra_meta, "chunk_length": len(chunk)}
-        # pgvector expects the embedding as a list literal string: '[0.1, 0.2, ...]'
-        vec_str = "[" + ",".join(str(v) for v in vector) + "]"
-        rows.append((row_id, namespace, patient_id, chunk, vec_str, json.dumps(meta)))
-
-    # Use an explicit cursor — psycopg3 Connection does not expose executemany()
-    with conn.cursor() as cur:
-        cur.executemany(
-            """
-            INSERT INTO public.embeddings
-                (id, namespace, patient_id, content, embedding, metadata)
-            VALUES (%s, %s, %s, %s, %s::vector, %s::jsonb)
-            """,
-            rows,
-        )
-    return len(rows)
-
-
-# --------------------------------------------------------------------------- #
-# Endpoints
+# Endpoints — JSON (text paste)
 # --------------------------------------------------------------------------- #
 
 @router.post("/hospital-docs")
 def ingest_hospital_docs(body: HospitalDocsRequest):
     """
     Chunk and embed static hospital content (namespace='public').
-    Admin/one-time use — no auth at the service layer (gateway enforces JWT).
+    Accepts plain text — use /hospital-docs/upload for PDF files.
     """
-    chunks = list(chunk_text(body.text))
-    if not chunks:
-        raise HTTPException(status_code=400, detail="No chunks produced from input text.")
-
-    try:
-        vectors = embed_texts(chunks)
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"Embedding API error: {exc}") from exc
-
-    try:
-        with get_conn() as conn:
-            inserted = _insert_embeddings(
-                conn=conn,
-                namespace="public",
-                patient_id=None,
-                chunks=chunks,
-                vectors=vectors,
-                extra_meta={"section_name": body.section_name},
-            )
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Database error: {exc}") from exc
-
+    inserted = _ingest_text(
+        text=body.text,
+        namespace="public",
+        patient_id=None,
+        extra_meta={"section_name": body.section_name},
+    )
     return {"inserted": inserted, "section_name": body.section_name}
 
 
@@ -143,32 +141,121 @@ def ingest_patient(patient_id: str, body: PatientIngestRequest):
     Chunk and embed patient-specific text (namespace='patient').
     Called by patient-service and doctor-service whenever new text is available.
     """
-    # Basic UUID format check (not strict — the DB FK enforces validity)
     try:
         uuid.UUID(patient_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="patient_id must be a valid UUID.")
 
-    chunks = list(chunk_text(body.text))
-    if not chunks:
-        raise HTTPException(status_code=400, detail="No chunks produced from input text.")
-
-    try:
-        vectors = embed_texts(chunks)
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"Embedding API error: {exc}") from exc
-
-    try:
-        with get_conn() as conn:
-            inserted = _insert_embeddings(
-                conn=conn,
-                namespace="patient",
-                patient_id=patient_id,
-                chunks=chunks,
-                vectors=vectors,
-                extra_meta={"source": body.source or "unknown"},
-            )
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Database error: {exc}") from exc
-
+    inserted = _ingest_text(
+        text=body.text,
+        namespace="patient",
+        patient_id=patient_id,
+        extra_meta={"source": body.source or "unknown"},
+    )
     return {"inserted": inserted, "patient_id": patient_id}
+
+
+# --------------------------------------------------------------------------- #
+# Endpoints — File upload (PDF extraction)
+# --------------------------------------------------------------------------- #
+
+@router.post("/hospital-docs/upload")
+async def ingest_hospital_docs_upload(
+    files: list[UploadFile] = File(..., description="One or more PDF files to ingest"),
+):
+    """
+    Accept multiple PDF files, extract text with pymupdf, chunk + embed each.
+    Returns per-file results so the caller knows exactly what was ingested.
+
+    This is the endpoint to call for the 10 hospital PDFs.
+    """
+    if not files:
+        raise HTTPException(status_code=400, detail="At least one file is required.")
+
+    results = []
+    for upload in files:
+        filename = upload.filename or "unknown.pdf"
+        try:
+            raw = await upload.read()
+            if not raw:
+                results.append({"file": filename, "error": "Empty file", "inserted": 0})
+                continue
+
+            text = _extract_pdf_text(raw)
+            if not text.strip():
+                results.append({"file": filename, "error": "No extractable text found in PDF", "inserted": 0})
+                continue
+
+            inserted = _ingest_text(
+                text=text,
+                namespace="public",
+                patient_id=None,
+                extra_meta={"section_name": filename, "source": "pdf_upload"},
+            )
+            results.append({"file": filename, "inserted": inserted, "chars": len(text)})
+
+        except ValueError as exc:
+            results.append({"file": filename, "error": str(exc), "inserted": 0})
+        except HTTPException as exc:
+            results.append({"file": filename, "error": exc.detail, "inserted": 0})
+        except Exception as exc:
+            results.append({"file": filename, "error": f"Unexpected error: {exc}", "inserted": 0})
+
+    total_inserted = sum(r.get("inserted", 0) for r in results)
+    return {
+        "total_inserted": total_inserted,
+        "files_processed": len(results),
+        "results": results,
+    }
+
+
+@router.post("/patient/{patient_id}/upload")
+async def ingest_patient_upload(
+    patient_id: str,
+    file: UploadFile = File(..., description="PDF or image file to extract and ingest"),
+    source: Optional[str] = None,
+):
+    """
+    Extract text from an uploaded patient file (PDF/image) and ingest into
+    the patient's RAG namespace.
+
+    Called by patient-service when a patient uploads a medical record file —
+    this ensures the file content (not just pasted text) goes into the vector
+    store so the doctor's AI assistant can retrieve it.
+    """
+    try:
+        uuid.UUID(patient_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="patient_id must be a valid UUID.")
+
+    filename = file.filename or "upload"
+
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty.")
+
+    try:
+        text = _extract_pdf_text(raw)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    if not text.strip():
+        raise HTTPException(
+            status_code=422,
+            detail="No extractable text found in the uploaded file. "
+                   "Try a text-based PDF or paste the text manually.",
+        )
+
+    inserted = _ingest_text(
+        text=text,
+        namespace="patient",
+        patient_id=patient_id,
+        extra_meta={"source": source or filename, "extracted_from": "pdf_upload"},
+    )
+
+    return {
+        "inserted": inserted,
+        "patient_id": patient_id,
+        "filename": filename,
+        "chars_extracted": len(text),
+    }

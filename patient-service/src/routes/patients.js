@@ -11,8 +11,11 @@
 // ─────────────────────────────────────────────────────────────────────────────
 'use strict';
 const express = require('express');
+const fs = require('fs');
 const path = require('path');
 const multer = require('multer');
+const pdfParse = require('pdf-parse');
+const mammoth = require('mammoth');
 const { z } = require('zod');
 const pool = require('../db/pool');
 const requireRole = require('../middleware/requireRole');
@@ -35,9 +38,11 @@ const upload = multer({
     storage,
     limits: { fileSize: 20 * 1024 * 1024 }, // 20 MB
     fileFilter: (_req, file, cb) => {
-        // Accept PDFs and common image types (OCR stubs accept anything for now)
-        const allowed = /pdf|jpe?g|png|webp/i;
-        cb(null, allowed.test(file.mimetype));
+        // Accept document types we can extract text from server-side
+        const allowedMime = /pdf|msword|vnd\.openxmlformats|plain|markdown/i;
+        const allowedExt  = /\.(pdf|docx|txt|md)$/i;
+        const ok = allowedMime.test(file.mimetype) || allowedExt.test(file.originalname);
+        cb(null, ok);
     },
 });
 
@@ -48,9 +53,10 @@ const updateProfileSchema = z.object({
     phone: z.string().max(30).optional(),
 });
 
+// Note: extracted_text is intentionally NOT in this schema.
+// Text is extracted server-side from the uploaded file.
 const summarySchema = z.object({
     source_hospital: z.string().min(1).max(255).optional(),
-    extracted_text: z.string().min(1, 'extracted_text is required.'),
 });
 
 const bookAppointmentSchema = z.object({
@@ -108,43 +114,84 @@ router.put('/me', requireRole('patient'), async (req, res) => {
 });
 
 // ─── POST /patients/me/summaries ─────────────────────────────────────────────
-// Accepts multipart/form-data with an optional `file` field + `extracted_text`
-// body field.  File is stored in /uploads; extracted_text goes into DB.
-// TODO (Day 5): POST extracted_text to ai-service /ingest/patient/{id}
+// Accepts multipart/form-data with a required `file` field.
+// Text is extracted SERVER-SIDE from the file — do not send extracted_text
+// as a body field, it will be ignored if present.
 router.post(
     '/me/summaries',
     requireRole('patient'),
     upload.single('file'),
     async (req, res) => {
-        // Validate text fields (multer puts non-file fields into req.body)
+        // File is required
+        if (!req.file) {
+            return res.status(400).json({ error: 'A file is required (PDF, DOCX, TXT, or MD).' });
+        }
+
+        // Validate optional metadata fields
         const result = summarySchema.safeParse(req.body);
         if (!result.success) {
             return res.status(400).json({ error: result.error.errors[0].message });
         }
-        const { source_hospital, extracted_text } = result.data;
-        const file_url = req.file ? `/uploads/${req.file.filename}` : null;
+        const { source_hospital } = result.data;
+
+        const filePath = req.file.path;
+        const file_url = `/uploads/${req.file.filename}`;
+        const originalName = req.file.originalname.toLowerCase();
+
+        // ── Server-side text extraction ──────────────────────────────────────
+        let extracted_text;
+        try {
+            if (originalName.endsWith('.pdf')) {
+                const buffer = fs.readFileSync(filePath);
+                const parsed = await pdfParse(buffer);
+                extracted_text = parsed.text;
+            } else if (originalName.endsWith('.docx')) {
+                const result = await mammoth.extractRawText({ path: filePath });
+                extracted_text = result.value;
+            } else if (originalName.endsWith('.txt') || originalName.endsWith('.md')) {
+                extracted_text = fs.readFileSync(filePath, 'utf8');
+            } else {
+                // Reject file types that slipped past multer
+                return res.status(400).json({
+                    error: `Unsupported file type. Please upload a PDF, DOCX, TXT, or MD file.`,
+                });
+            }
+        } catch (extractErr) {
+            console.error('[POST /patients/me/summaries] extraction error:', extractErr.message);
+            return res.status(422).json({
+                error: `Could not extract text from file: ${extractErr.message}`,
+            });
+        }
+
+        if (!extracted_text || !extracted_text.trim()) {
+            return res.status(422).json({
+                error: 'No readable text found in the uploaded file. Try a text-based PDF or plain text file.',
+            });
+        }
+
+        // ── DB insert ────────────────────────────────────────────────────────
         try {
             const { rows } = await pool.query(
                 `INSERT INTO patients.old_summaries
                    (patient_id, source_hospital, file_url, extracted_text)
                  VALUES ($1, $2, $3, $4)
                  RETURNING id, patient_id, source_hospital, file_url, extracted_text, uploaded_at`,
-                [req.user.sub, source_hospital ?? null, file_url, extracted_text]
+                [req.user.sub, source_hospital ?? null, file_url, extracted_text.trim()]
             );
+
             // Fire-and-forget: POST extracted text to ai-service for RAG ingestion.
-            // Non-blocking — DB insert already done; ingest failure is logged but
-            // does NOT fail this endpoint.
             const aiIngestUrl = `${process.env.AI_SERVICE_URL}/ingest/patient/${req.user.sub}`;
             fetch(aiIngestUrl, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                    text: extracted_text,
-                    source: source_hospital || 'patient_upload',
+                    text: extracted_text.trim(),
+                    source: source_hospital || req.file.originalname,
                 }),
             }).catch((err) =>
                 console.error('[ai-service ingest] Failed to ingest patient summary:', err.message)
             );
+
             return res.status(201).json(rows[0]);
         } catch (err) {
             console.error('[POST /patients/me/summaries]', err.message);

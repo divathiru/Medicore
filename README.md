@@ -36,6 +36,21 @@ This will:
 curl http://localhost:4000/health
 # → {"status":"ok"}
 ```
+### 4. Seed the public RAG corpus (run once, or after adding files)
+Drop hospital documents (PDF/TXT/MD) into `ai-service/seed-docs/`, then run:
+```bash
+# Inside Docker (recommended)
+docker compose exec ai-service python scripts/ingest_seed_docs.py
+
+# With --force to re-embed files already in the DB
+docker compose exec ai-service python scripts/ingest_seed_docs.py --force
+
+# Locally (venv active inside ai-service/)
+python scripts/ingest_seed_docs.py
+```
+The script is **idempotent by default** — it skips files already present in the
+`public` namespace unless `--force` is passed. Re-run it any time new files
+are dropped into `seed-docs/`.
 ---
 ## Seed Accounts (Demo Credentials)
 These accounts are inserted by `db/seed.sql` on first `docker compose up`.  

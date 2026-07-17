@@ -3,65 +3,118 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { patientsApi } from '../../api/patients.js'
 import ErrorMessage from '../../components/ErrorMessage.jsx'
 
+const ACCEPTED_TYPES = '.pdf,.docx,.txt,.md'
+const MAX_PREVIEW_CHARS = 800
+
 export default function UploadSummary() {
   const qc = useQueryClient()
   const [file, setFile] = useState(null)
-  const [extractedText, setExtractedText] = useState('')
   const [sourceHospital, setSourceHospital] = useState('')
-  const [success, setSuccess] = useState(false)
+  const [preview, setPreview] = useState(null)   // { extracted_text, filename }
   const fileRef = useRef()
 
   const mutation = useMutation({
     mutationFn: (formData) => patientsApi.uploadSummary(formData),
-    onSuccess: () => {
-      setSuccess(true)
+    onSuccess: (data) => {
+      setPreview({
+        extracted_text: data.extracted_text || '',
+        filename: file?.name || 'file',
+      })
       setFile(null)
-      setExtractedText('')
       setSourceHospital('')
       if (fileRef.current) fileRef.current.value = ''
-      setTimeout(() => setSuccess(false), 5000)
+      qc.invalidateQueries({ queryKey: ['summaries'] })
     },
   })
 
   const handleFileChange = (e) => {
-    const f = e.target.files[0]
-    setFile(f || null)
+    setFile(e.target.files[0] || null)
+    setPreview(null)         // clear old preview when a new file is chosen
+    mutation.reset()
   }
 
   const handleSubmit = (e) => {
     e.preventDefault()
-    if (!extractedText.trim()) return
+    if (!file) return
 
     const fd = new FormData()
-    fd.append('extracted_text', extractedText.trim())
+    fd.append('file', file)
     if (sourceHospital.trim()) fd.append('source_hospital', sourceHospital.trim())
-    if (file) fd.append('file', file)
     mutation.mutate(fd)
   }
+
+  const previewSnippet = preview
+    ? preview.extracted_text.length > MAX_PREVIEW_CHARS
+      ? preview.extracted_text.slice(0, MAX_PREVIEW_CHARS) + '…'
+      : preview.extracted_text
+    : null
 
   return (
     <div>
       <div className="page-header">
         <h1>Upload Medical Records</h1>
-        <p>Share previous hospital records so your doctor's AI can access your full medical history.</p>
+        <p>
+          Upload a previous hospital report and MediCore will extract and index
+          its contents so your doctor's AI can access your full medical history.
+        </p>
       </div>
 
-      <div className="card" style={{ maxWidth: 620 }}>
+      <div className="card" style={{ maxWidth: 640 }}>
         <div className="info-box" style={{ marginBottom: '1.5rem' }}>
-          <strong>How this works:</strong> Paste the text content from your old medical reports below.
-          The AI assistant will use this to provide context during your doctor consultation.
+          <strong>Supported formats:</strong> PDF, DOCX, TXT, MD — up to 20 MB.
+          Text is extracted automatically on the server; you don't need to paste anything.
         </div>
 
-        {mutation.isError && <ErrorMessage message={mutation.error.message} />}
-        {success && (
-          <div className="info-box" style={{ marginBottom: '1rem', background: '#ECFDF5', border: '1px solid #A7F3D0', color: '#065F46' }}>
-            ✓ Medical record uploaded and sent to AI for indexing!
+        {mutation.isError && <ErrorMessage message={mutation.error?.message || 'Upload failed.'} />}
+
+        {/* ── Success preview ─────────────────────────────────────────── */}
+        {preview && (
+          <div
+            style={{
+              marginBottom: '1.5rem',
+              borderRadius: '0.75rem',
+              border: '1px solid #A7F3D0',
+              background: '#ECFDF5',
+              padding: '1.25rem',
+            }}
+          >
+            <p style={{ fontWeight: 600, color: '#065F46', marginBottom: '0.5rem' }}>
+              ✓ "{preview.filename}" uploaded and indexed!
+            </p>
+            <p style={{ fontSize: '0.8125rem', color: '#047857', marginBottom: '0.5rem' }}>
+              Extracted text preview:
+            </p>
+            <pre
+              style={{
+                fontSize: '0.78rem',
+                color: '#065F46',
+                background: '#D1FAE5',
+                borderRadius: '0.5rem',
+                padding: '0.75rem',
+                whiteSpace: 'pre-wrap',
+                wordBreak: 'break-word',
+                maxHeight: 220,
+                overflowY: 'auto',
+                fontFamily: 'ui-monospace, monospace',
+                margin: 0,
+              }}
+            >
+              {previewSnippet || '(no text extracted)'}
+            </pre>
+            {preview.extracted_text.length > MAX_PREVIEW_CHARS && (
+              <p style={{ fontSize: '0.75rem', color: '#6EE7B7', marginTop: '0.4rem' }}>
+                Showing first {MAX_PREVIEW_CHARS} of {preview.extracted_text.length} characters.
+              </p>
+            )}
           </div>
         )}
 
+        {/* ── Upload form ─────────────────────────────────────────────── */}
         <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
           <div className="form-group">
-            <label className="form-label" htmlFor="upload-hospital">Source hospital / clinic (optional)</label>
+            <label className="form-label" htmlFor="upload-hospital">
+              Source hospital / clinic <span style={{ color: 'var(--neutral-400)' }}>(optional)</span>
+            </label>
             <input
               id="upload-hospital"
               className="form-input"
@@ -72,44 +125,36 @@ export default function UploadSummary() {
           </div>
 
           <div className="form-group">
-            <label className="form-label" htmlFor="upload-text">
-              Medical record text <span style={{ color: '#EF4444' }}>*</span>
+            <label className="form-label" htmlFor="upload-file">
+              Medical record file <span style={{ color: '#EF4444' }}>*</span>
             </label>
-            <textarea
-              id="upload-text"
-              className={`form-input form-textarea${!extractedText.trim() && mutation.isError ? ' error' : ''}`}
-              rows={8}
-              placeholder="Paste the full text of your medical report here (lab results, discharge summaries, prescriptions, etc.)…"
-              value={extractedText}
-              onChange={(e) => setExtractedText(e.target.value)}
-              required
-            />
-            <span style={{ fontSize: '0.8125rem', color: 'var(--neutral-400)' }}>
-              {extractedText.length} characters
-            </span>
-          </div>
-
-          <div className="form-group">
-            <label className="form-label" htmlFor="upload-file">Attach file (optional — PDF/JPEG/PNG, max 20MB)</label>
             <input
               id="upload-file"
               ref={fileRef}
               className="form-input"
               type="file"
-              accept=".pdf,.jpg,.jpeg,.png,.webp"
+              accept={ACCEPTED_TYPES}
               onChange={handleFileChange}
               style={{ padding: '0.45rem' }}
+              required
             />
-            {file && <span style={{ fontSize: '0.8125rem', color: 'var(--teal-700)' }}>📎 {file.name}</span>}
+            {file && (
+              <span style={{ fontSize: '0.8125rem', color: 'var(--teal-700)', marginTop: '0.25rem', display: 'block' }}>
+                📎 {file.name} ({(file.size / 1024).toFixed(1)} KB)
+              </span>
+            )}
+            <span style={{ fontSize: '0.78rem', color: 'var(--neutral-400)' }}>
+              PDF, DOCX, TXT or MD · max 20 MB
+            </span>
           </div>
 
           <button
             id="upload-submit"
             type="submit"
             className="btn btn-primary"
-            disabled={mutation.isPending || !extractedText.trim()}
+            disabled={mutation.isPending || !file}
           >
-            {mutation.isPending ? 'Uploading…' : 'Upload Record'}
+            {mutation.isPending ? 'Uploading & extracting…' : 'Upload Record'}
           </button>
         </form>
       </div>

@@ -1,0 +1,56 @@
+MediCore General Hospital — Patient Billing & Insurance Policy
+
+Effective Date: 1 January 2025
+Version: 2.1
+
+1. CONSULTATION FEES
+
+   Standard outpatient consultation (GP):           $80
+   Specialist outpatient consultation:              $150
+   Emergency department consultation (non-trauma):  $200
+   Emergency department consultation (trauma):      $350
+   Inpatient daily room rate (general ward):        $400/day
+   Inpatient daily room rate (private room):        $750/day
+   Intensive Care Unit (ICU) daily rate:           $1,800/day
+
+2. ACCEPTED INSURANCE PANELS
+
+   MediCore is a panel provider for the following insurers:
+   - HealthFirst Premier
+   - BlueCross National
+   - MediShield Plus
+   - CareAssure Group
+   - NationalHealth Cooperative
+
+   Patients covered by a panel insurer must present their insurance card
+   at registration.  Co-payments as defined in each policy apply.
+
+3. SELF-PAY PATIENTS
+
+   Self-pay patients are required to pay a deposit equal to the estimated
+   cost of treatment at the time of admission.  A 10% prompt-payment
+   discount is available for full settlement within 7 days of discharge.
+
+4. CASHIER HOURS
+
+   Main cashier counter: Monday – Saturday, 7:30 AM – 8:00 PM
+   Emergency cashier (24h): adjacent to ED triage, open round the clock.
+
+5. BILLING DISPUTES
+
+   All billing disputes must be submitted in writing to the Billing
+   Department within 30 days of invoice date.  Disputes can be sent to:
+   billing@medicore.dev
+
+6. QUEUE & PAYMENT PROCESSING
+
+   Appointments are assigned a queue number by the Cashier upon payment
+   confirmation.  Patients should retain their queue ticket and proceed
+   to the relevant department waiting area.  SMS notification is sent
+   when queue position reaches number 3.
+
+7. OUTSTANDING BALANCES
+
+   Unpaid balances older than 60 days may be referred to MediCore's
+   collections partner.  Payment plans can be arranged — contact the
+   cashier counter or email billing@medicore.dev before the 60-day mark.
