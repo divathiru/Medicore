@@ -173,15 +173,19 @@ router.post('/me/patients/:patientId/prescriptions', requireRole('doctor'), asyn
         await client.query('COMMIT');
 
         // Fire-and-forget: POST prescription text to ai-service for RAG ingestion.
-        // Non-blocking — DB write already committed; ingest failure is logged but
-        // does NOT roll back the prescription.
+        // Non-blocking — DB write is already committed; ingest failure is logged
+        // server-side but does NOT fail the prescription submission.
+        const ingestText =
+            `Doctor's Summary:\n${doctor_summary}\n\nPrescription:\n${prescription_text}`;
         const aiIngestUrl = `${process.env.AI_SERVICE_URL}/ingest/patient/${patientId}`;
         fetch(aiIngestUrl, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-                text: `${doctor_summary}\n\nPrescription:\n${prescription_text}`,
+                text: ingestText,
                 source: 'doctor_prescription',
+                source_type: 'prescription',
+                appointment_id: appointment_id,
             }),
         }).catch((err) =>
             console.error('[ai-service ingest] Failed to ingest prescription:', err.message)

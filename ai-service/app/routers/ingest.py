@@ -107,6 +107,8 @@ class HospitalDocsRequest(BaseModel):
 class PatientIngestRequest(BaseModel):
     text: str
     source: Optional[str] = None
+    source_type: Optional[str] = None        # 'old_summary' | 'prescription'
+    appointment_id: Optional[str] = None     # set when source_type='prescription'
 
     @field_validator("text")
     @classmethod
@@ -146,11 +148,17 @@ def ingest_patient(patient_id: str, body: PatientIngestRequest):
     except ValueError:
         raise HTTPException(status_code=400, detail="patient_id must be a valid UUID.")
 
+    extra_meta: dict = {"source": body.source or "unknown"}
+    if body.source_type:
+        extra_meta["source_type"] = body.source_type
+    if body.appointment_id:
+        extra_meta["appointment_id"] = body.appointment_id
+
     inserted = _ingest_text(
         text=body.text,
         namespace="patient",
         patient_id=patient_id,
-        extra_meta={"source": body.source or "unknown"},
+        extra_meta=extra_meta,
     )
     return {"inserted": inserted, "patient_id": patient_id}
 

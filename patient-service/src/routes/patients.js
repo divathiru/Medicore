@@ -187,6 +187,7 @@ router.post(
                 body: JSON.stringify({
                     text: extracted_text.trim(),
                     source: source_hospital || req.file.originalname,
+                    source_type: 'old_summary',
                 }),
             }).catch((err) =>
                 console.error('[ai-service ingest] Failed to ingest patient summary:', err.message)
@@ -262,7 +263,8 @@ router.post('/me/appointments', requireRole('patient'), async (req, res) => {
 });
 
 // ─── GET /patients/me/appointments ───────────────────────────────────────────
-// Returns the patient's own appointment history joined with doctor info.
+// Returns the patient's own appointment history joined with doctor info and,
+// for completed appointments, the prescription written by the doctor.
 router.get('/me/appointments', requireRole('patient'), async (req, res) => {
     try {
         const { rows } = await pool.query(
@@ -272,9 +274,13 @@ router.get('/me/appointments', requireRole('patient'), async (req, res) => {
                     a.queue_position,
                     a.created_at,
                     d.full_name  AS doctor_name,
-                    d.department AS doctor_department
+                    d.department AS doctor_department,
+                    pr.doctor_summary,
+                    pr.prescription_text,
+                    pr.created_at AS prescription_created_at
              FROM appointments.appointments a
              JOIN doctors.doctors d ON d.id = a.doctor_id
+             LEFT JOIN appointments.prescriptions pr ON pr.appointment_id = a.id
              WHERE a.patient_id = $1
              ORDER BY a.scheduled_date DESC, a.created_at DESC`,
             [req.user.sub]
@@ -285,5 +291,6 @@ router.get('/me/appointments', requireRole('patient'), async (req, res) => {
         return res.status(500).json({ error: 'Internal server error.' });
     }
 });
+
 
 module.exports = router;
