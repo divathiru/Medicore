@@ -1,0 +1,84 @@
+name: "CI · doctor-service"
+
+on:
+  push:
+    branches: ["**"]
+    paths:
+      - "doctor-service/**"
+      - ".github/workflows/ci-doctor-service.yml"
+  pull_request:
+    branches: ["main"]
+    paths:
+      - "doctor-service/**"
+
+env:
+  IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/medicore-doctor-service
+
+jobs:
+  lint-and-test:
+    name: Lint & smoke test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: doctor-service
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Lint
+        run: npm run lint --if-present
+
+      - name: Smoke test — /health
+        env:
+          PORT: "4002"
+          DATABASE_URL: "postgres://fake:fake@localhost:5432/fake"
+          JWT_SECRET: "ci-test-secret-at-least-32-chars-long"
+        run: |
+          node src/index.js &
+          SERVER_PID=$!
+          for i in $(seq 1 15); do
+            curl -sf http://localhost:4002/health && break
+            sleep 1
+          done
+          curl -sf http://localhost:4002/health | grep '"status":"ok"'
+          kill $SERVER_PID
+
+  build-and-push:
+    name: Build & push Docker image
+    runs-on: ubuntu-latest
+    needs: lint-and-test
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/metadata-action@v5
+        id: meta
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          tags: |
+            type=sha,prefix=sha-
+            type=raw,value=latest
+
+      - uses: docker/build-push-action@v5
+        with:
+          context: ./doctor-service
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}

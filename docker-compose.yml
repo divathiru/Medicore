@@ -1,7 +1,5 @@
 # =============================================================
-# MediCore — docker-compose.yml
-# Day 1: postgres + main-website only.
-# Uncomment service stanzas on the relevant build days.
+# MediCore — docker-compose.yml  (Day 5 — full stack)
 # =============================================================
 volumes:
   postgres_data:
@@ -12,10 +10,6 @@ networks:
 services:
   # ===========================================================
   # PostgreSQL with pgvector extension
-  # The pgvector/pgvector:pg16 image ships with the vector
-  # extension pre-installed — no extra apt-get needed.
-  # Mounted init scripts run in alphabetical order on first
-  # startup only (i.e., when the volume is empty).
   # ===========================================================
   postgres:
     image: pgvector/pgvector:pg16
@@ -38,9 +32,35 @@ services:
       timeout: 5s
       retries: 5
       start_period: 10s
+
   # ===========================================================
-  # main-website — auth + API gateway
-  # Port 4000 — the ONLY public entry point in production.
+  # ai-service — must be healthy before patient/doctor start
+  # (they call /ingest/* on patient summary upload)
+  # ===========================================================
+  ai-service:
+    build:
+      context: ./ai-service
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      PORT: "5000"
+    ports:
+      - "5000:5000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - medicore_net
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:5000/health')\" || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+  # ===========================================================
+  # main-website — auth + API gateway  (port 4000)
   # ===========================================================
   main-website:
     build:
@@ -55,6 +75,13 @@ services:
         condition: service_healthy
     networks:
       - medicore_net
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:4000/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
   # ===========================================================
   # patient-service — patient profiles, appointment booking
   # ===========================================================
@@ -77,6 +104,13 @@ services:
         condition: service_healthy
     networks:
       - medicore_net
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:4001/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
   # ===========================================================
   # doctor-service — appointment queue, prescriptions
   # ===========================================================
@@ -97,6 +131,13 @@ services:
         condition: service_healthy
     networks:
       - medicore_net
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:4002/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
   # ===========================================================
   # cashier-service — payments, queue position assignment
   # ===========================================================
@@ -115,42 +156,33 @@ services:
         condition: service_healthy
     networks:
       - medicore_net
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:4003/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
   # ===========================================================
-  # ai-service — Python/FastAPI RAG pipelines + Mistral
-  # Port 5000 — /ingest/*, /chat/public, /chat/patient
-  # ===========================================================
-  ai-service:
-    build:
-      context: ./ai-service
-      dockerfile: Dockerfile
-    restart: unless-stopped
-    env_file: .env
-    environment:
-      PORT: "5000"
-    ports:
-      - "5000:5000"
-    depends_on:
-      postgres:
-        condition: service_healthy
-    networks:
-      - medicore_net
-  # ===========================================================
-  # Frontend — React/Vite built by nginx
-  # Port 5173 on the host, port 80 inside the container.
+  # Frontend — React/Vite built by nginx  (port 5173 → 80)
   # ===========================================================
   frontend:
     build:
       context: ./frontend
       dockerfile: Dockerfile
       args:
-        # At docker-compose build time, VITE_API_BASE_URL must be reachable
-        # from the browser (not from inside the Docker network).
-        # localhost:4000 works for a local demo where the gateway is port-mapped.
         VITE_API_BASE_URL: http://localhost:4000
     restart: unless-stopped
     ports:
-      - "5173:80"   # nginx serves the built React app on port 80 inside container
+      - "5173:80"
     depends_on:
-      - main-website
+      main-website:
+        condition: service_healthy
     networks:
       - medicore_net
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost/index.html > /dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
