@@ -1,5 +1,8 @@
 # =============================================================================
-# MediCore Terraform — Variables
+# terraform/variables.tf
+# All input variables for the MediCore deployment.
+# Sensitive values (mistral_api_key) are never committed — pass them at apply
+# time via: terraform apply -var="mistral_api_key=$MISTRAL_API_KEY"
 # =============================================================================
 
 variable "aws_region" {
@@ -19,13 +22,13 @@ variable "environment" {
 }
 
 variable "db_instance_class" {
-  description = "RDS instance class"
+  description = "RDS instance class. db.t3.micro is Free Tier eligible (dev only)."
   type        = string
   default     = "db.t3.micro"
 }
 
 variable "service_desired_count" {
-  description = "Desired task count per ECS service"
+  description = "Desired task count per ECS service. Use 1 for dev, 2+ for prod."
   type        = number
   default     = 1
 }
@@ -41,7 +44,11 @@ variable "github_repo" {
 }
 
 variable "mistral_api_key" {
-  description = "Mistral AI API key — injected at apply time, never committed"
-  type        = string
-  sensitive   = true
+  description = <<-EOT
+    Mistral AI API key — never committed to version control.
+    Pass at apply time: terraform apply -var="mistral_api_key=$MISTRAL_API_KEY"
+    Or add to terraform.tfvars (which must be gitignored).
+  EOT
+  type      = string
+  sensitive = true
 }

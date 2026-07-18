@@ -1,9 +1,14 @@
 # =============================================================
 # MediCore — docker-compose.yml  (Day 5 — full stack)
 # =============================================================
+# NOTE: uploads_data volume is kept here for backward compatibility
+# but is no longer mounted into patient-service. Patient uploads
+# now go to S3 via multer.memoryStorage + @aws-sdk/client-s3.
+# To test S3 upload locally, set AWS_* vars in your shell before
+# running docker compose — see patient-service/.env.example.
 volumes:
   postgres_data:
-  uploads_data:
+  uploads_data: # retained for bwd compat — not mounted by any service
 networks:
   medicore_net:
     driver: bridge
@@ -76,7 +81,7 @@ services:
     networks:
       - medicore_net
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:4000/health || exit 1"]
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:4000/health || exit 1"]
       interval: 15s
       timeout: 5s
       retries: 3
@@ -93,10 +98,12 @@ services:
     env_file: .env
     environment:
       PORT: "4001"
+      # S3_BUCKET_NAME is read from .env or set in shell before docker compose.
+      # In local dev without real AWS creds, the /patients/me/summaries upload
+      # endpoint will return 500 — this is expected. See README Known Simplifications.
     ports:
       - "4001:4001"
-    volumes:
-      - uploads_data:/uploads
+    # No volume mount — uploads go to S3, not local disk.
     depends_on:
       postgres:
         condition: service_healthy
@@ -105,7 +112,7 @@ services:
     networks:
       - medicore_net
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:4001/health || exit 1"]
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:4001/health || exit 1"]
       interval: 15s
       timeout: 5s
       retries: 3
@@ -132,7 +139,7 @@ services:
     networks:
       - medicore_net
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:4002/health || exit 1"]
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:4002/health || exit 1"]
       interval: 15s
       timeout: 5s
       retries: 3
@@ -157,7 +164,7 @@ services:
     networks:
       - medicore_net
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:4003/health || exit 1"]
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:4003/health || exit 1"]
       interval: 15s
       timeout: 5s
       retries: 3
@@ -181,7 +188,7 @@ services:
     networks:
       - medicore_net
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost/index.html > /dev/null || exit 1"]
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/index.html > /dev/null || exit 1"]
       interval: 30s
       timeout: 5s
       retries: 3

@@ -8,15 +8,23 @@
 // POST /patients/me/summaries         — upload old medical summary (multipart)
 // POST /patients/me/appointments      — book an appointment (transactional)
 // GET  /patients/me/appointments      — own appointment history
+//
+// S3 NOTE: Uploaded files are stored in S3, not on local disk.
+// The bucket name is read from the S3_BUCKET_NAME environment variable.
+// On ECS Fargate, the patient-service task role grants s3:PutObject/GetObject
+// scoped to patient-uploads/* — no access keys in code.
+// For local docker-compose testing outside AWS, set AWS_ACCESS_KEY_ID,
+// AWS_SECRET_ACCESS_KEY, and AWS_REGION env vars pointing at a real S3 bucket
+// or a LocalStack endpoint. See README Known Simplifications for details.
 // ─────────────────────────────────────────────────────────────────────────────
 'use strict';
 const express = require('express');
-const fs = require('fs');
-const path = require('path');
 const multer = require('multer');
 const pdfParse = require('pdf-parse');
 const mammoth = require('mammoth');
 const { z } = require('zod');
+const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
+const { v4: uuidv4 } = require('uuid');
 const pool = require('../db/pool');
 const requireRole = require('../middleware/requireRole');
 
@@ -26,16 +34,18 @@ const router = express.Router();
 // Maximum appointments any single doctor can have on one calendar date.
 const MAX_DAILY_SLOTS = 10;
 
-// ─── Multer: store uploads in /uploads volume ─────────────────────────────────
-const storage = multer.diskStorage({
-    destination: (_req, _file, cb) => cb(null, '/uploads'),
-    filename: (_req, file, cb) => {
-        const unique = `${Date.now()}-${Math.round(Math.random() * 1e9)}`;
-        cb(null, unique + path.extname(file.originalname));
-    },
-});
+// ─── S3 client — uses default credential chain ────────────────────────────────
+// In ECS: the task role is assumed automatically via the metadata endpoint.
+// In local dev: set AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY + AWS_REGION,
+// or use AWS_PROFILE. Never put credentials in code or docker-compose.
+const s3 = new S3Client({ region: process.env.AWS_REGION || 'us-east-1' });
+const S3_BUCKET = process.env.S3_BUCKET_NAME;
+
+// ─── Multer: memory storage (buffer → S3, never touches disk) ─────────────────
+// We use memoryStorage so the file buffer is available for both text extraction
+// and the S3 PutObject call without writing to the (ephemeral) container disk.
 const upload = multer({
-    storage,
+    storage: multer.memoryStorage(),
     limits: { fileSize: 20 * 1024 * 1024 }, // 20 MB
     fileFilter: (_req, file, cb) => {
         // Accept document types we can extract text from server-side
@@ -54,7 +64,7 @@ const updateProfileSchema = z.object({
 });
 
 // Note: extracted_text is intentionally NOT in this schema.
-// Text is extracted server-side from the uploaded file.
+// Text is extracted server-side from the uploaded file buffer.
 const summarySchema = z.object({
     source_hospital: z.string().min(1).max(255).optional(),
 });
@@ -115,8 +125,12 @@ router.put('/me', requireRole('patient'), async (req, res) => {
 
 // ─── POST /patients/me/summaries ─────────────────────────────────────────────
 // Accepts multipart/form-data with a required `file` field.
-// Text is extracted SERVER-SIDE from the file — do not send extracted_text
-// as a body field, it will be ignored if present.
+// Workflow:
+//   1. multer reads file into memory buffer (no disk write)
+//   2. Extract text from buffer (PDF / DOCX / TXT / MD)
+//   3. Upload original buffer to S3 under patient-uploads/{patient_id}/{uuid}-{filename}
+//   4. INSERT into patients.old_summaries with the S3 key as file_url
+//   5. Fire-and-forget POST to ai-service for RAG ingestion
 router.post(
     '/me/summaries',
     requireRole('patient'),
@@ -134,26 +148,24 @@ router.post(
         }
         const { source_hospital } = result.data;
 
-        const filePath = req.file.path;
-        const file_url = `/uploads/${req.file.filename}`;
+        const fileBuffer   = req.file.buffer;
         const originalName = req.file.originalname.toLowerCase();
+        const patientId    = req.user.sub;
 
-        // ── Server-side text extraction ──────────────────────────────────────
+        // ── Server-side text extraction from buffer ──────────────────────────
         let extracted_text;
         try {
             if (originalName.endsWith('.pdf')) {
-                const buffer = fs.readFileSync(filePath);
-                const parsed = await pdfParse(buffer);
+                const parsed = await pdfParse(fileBuffer);
                 extracted_text = parsed.text;
             } else if (originalName.endsWith('.docx')) {
-                const result = await mammoth.extractRawText({ path: filePath });
-                extracted_text = result.value;
+                const extracted = await mammoth.extractRawText({ buffer: fileBuffer });
+                extracted_text = extracted.value;
             } else if (originalName.endsWith('.txt') || originalName.endsWith('.md')) {
-                extracted_text = fs.readFileSync(filePath, 'utf8');
+                extracted_text = fileBuffer.toString('utf8');
             } else {
-                // Reject file types that slipped past multer
                 return res.status(400).json({
-                    error: `Unsupported file type. Please upload a PDF, DOCX, TXT, or MD file.`,
+                    error: 'Unsupported file type. Please upload a PDF, DOCX, TXT, or MD file.',
                 });
             }
         } catch (extractErr) {
@@ -169,18 +181,45 @@ router.post(
             });
         }
 
+        // ── S3 upload ────────────────────────────────────────────────────────
+        // Key format: patient-uploads/{patient_id}/{uuid}-{original_filename}
+        // The bucket stays private — file_url stores the S3 key, not a URL.
+        // Generating presigned URLs for download is out of scope for this build
+        // (noted in README Known Simplifications).
+        if (!S3_BUCKET) {
+            console.error('[POST /patients/me/summaries] S3_BUCKET_NAME env var is not set');
+            return res.status(500).json({ error: 'Storage not configured (S3_BUCKET_NAME missing).' });
+        }
+
+        const s3Key = `patient-uploads/${patientId}/${uuidv4()}-${req.file.originalname}`;
+        try {
+            await s3.send(new PutObjectCommand({
+                Bucket:      S3_BUCKET,
+                Key:         s3Key,
+                Body:        fileBuffer,
+                ContentType: req.file.mimetype || 'application/octet-stream',
+            }));
+            console.log(`[POST /patients/me/summaries] Uploaded to S3: ${s3Key}`);
+        } catch (s3Err) {
+            console.error('[POST /patients/me/summaries] S3 upload error:', s3Err.message);
+            return res.status(500).json({ error: 'Failed to store uploaded file.' });
+        }
+
         // ── DB insert ────────────────────────────────────────────────────────
+        // file_url stores the S3 key (not a local path, not a presigned URL).
+        // The key is stable and can be used server-side to generate a presigned
+        // URL on demand in a future version.
         try {
             const { rows } = await pool.query(
                 `INSERT INTO patients.old_summaries
                    (patient_id, source_hospital, file_url, extracted_text)
                  VALUES ($1, $2, $3, $4)
                  RETURNING id, patient_id, source_hospital, file_url, extracted_text, uploaded_at`,
-                [req.user.sub, source_hospital ?? null, file_url, extracted_text.trim()]
+                [patientId, source_hospital ?? null, s3Key, extracted_text.trim()]
             );
 
             // Fire-and-forget: POST extracted text to ai-service for RAG ingestion.
-            const aiIngestUrl = `${process.env.AI_SERVICE_URL}/ingest/patient/${req.user.sub}`;
+            const aiIngestUrl = `${process.env.AI_SERVICE_URL}/ingest/patient/${patientId}`;
             fetch(aiIngestUrl, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },

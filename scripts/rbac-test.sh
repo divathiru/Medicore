@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # MediCore — RBAC + Security End-to-End Test Suite (Steps 3 + 4)
 # Run: chmod +x scripts/rbac-test.sh && ./scripts/rbac-test.sh
-set -euo pipefail
+set -uo pipefail
 BASE="http://localhost:4000"
 PASS=0; FAIL=0; TOTAL=0
 GREEN='\033[0;32m'; RED='\033[0;31m'; RESET='\033[0m'
-pass() { echo -e "${GREEN}  PASS${RESET} — $1"; ((PASS++)); ((TOTAL++)); }
-fail() { echo -e "${RED}  FAIL${RESET} — $1"; ((FAIL++)); ((TOTAL++)); }
+pass() { echo -e "${GREEN}  PASS${RESET} — $1"; PASS=$((PASS+1)); TOTAL=$((TOTAL+1)); }
+fail() { echo -e "${RED}  FAIL${RESET} — $1"; FAIL=$((FAIL+1)); TOTAL=$((TOTAL+1)); }
 assert_status() {
   local expected="$1" actual="$2" name="$3"
   [ "$actual" -eq "$expected" ] && pass "$name (HTTP $actual)" || fail "$name (expected $expected, got $actual)"

@@ -1,47 +1,42 @@
 # =============================================================================
-# MediCore Terraform — Outputs
+# terraform/outputs.tf
+# Outputs needed after terraform apply:
+#
+#   alb_dns_name          — paste into browser for the live app
+#   ecs_cluster_name      — set as GitHub repo variable ECS_CLUSTER
+#   s3_bucket_name        — confirm the bucket name matches patient-service config
+#   github_deploy_role_arn — CRITICAL: paste this into GitHub repo →
+#                            Settings → Variables → Actions → AWS_DEPLOY_ROLE
+#                            before the first CI/CD deploy can succeed
 # =============================================================================
 
 output "alb_dns_name" {
-  description = "Public DNS of the Application Load Balancer"
+  description = "DNS name of the Application Load Balancer. Use this as the base URL: http://<alb_dns_name>"
   value       = aws_lb.main.dns_name
 }
 
-output "alb_url" {
-  description = "Public URL of the MediCore frontend"
-  value       = "http://${aws_lb.main.dns_name}"
-}
-
-output "api_url" {
-  description = "Public API gateway URL"
-  value       = "http://${aws_lb.main.dns_name}"
-}
-
 output "ecs_cluster_name" {
-  description = "ECS Cluster name"
+  description = "ECS cluster name. Set this as GitHub repo variable: ECS_CLUSTER"
   value       = aws_ecs_cluster.main.name
 }
 
-output "rds_endpoint" {
-  description = "RDS endpoint (private, accessible from ECS tasks only)"
-  value       = aws_db_instance.postgres.address
-  sensitive   = true
+output "s3_bucket_name" {
+  description = "S3 bucket name for patient uploads. Confirm this matches S3_BUCKET_NAME in patient-service config."
+  value       = aws_s3_bucket.patient_uploads.bucket
 }
 
 output "github_deploy_role_arn" {
-  description = "ARN of the GitHub Actions OIDC deploy role — add this to GitHub repo settings as AWS_DEPLOY_ROLE_ARN"
-  value       = aws_iam_role.github_deploy.arn
+  description = <<-EOT
+    ARN of the GitHub Actions OIDC deploy role.
+    After terraform apply, paste this value into:
+      GitHub repo → Settings → Variables → Actions → AWS_DEPLOY_ROLE
+    This enables the deploy workflow to assume the role via OIDC (no static keys).
+  EOT
+  value = aws_iam_role.github_deploy.arn
 }
 
-output "cloudwatch_log_groups" {
-  description = "CloudWatch log group names per service"
-  value = {
-    for svc, lg in aws_cloudwatch_log_group.service :
-    svc => lg.name
-  }
-}
-
-output "service_discovery_namespace" {
-  description = "Cloud Map private DNS namespace"
-  value       = "${local.name_prefix}.local"
+output "rds_endpoint" {
+  description = "RDS PostgreSQL endpoint (for reference only — never expose publicly)"
+  value       = aws_db_instance.postgres.address
+  sensitive   = false  # hostname only, no credentials
 }

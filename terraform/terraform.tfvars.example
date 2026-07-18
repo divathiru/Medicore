@@ -1,20 +1,38 @@
 # =============================================================================
-# MediCore — terraform.tfvars.example
-# Copy to terraform.tfvars and fill in real values.
-# NEVER commit terraform.tfvars — it is in .gitignore.
+# terraform/terraform.tfvars.example
+# Copy this to terraform.tfvars (which is gitignored) and fill in real values.
+#
+# IMPORTANT: terraform.tfvars must NEVER be committed to version control.
+# Verify it's in .gitignore before running terraform apply.
+#
+# Run: cp terraform.tfvars.example terraform.tfvars
+# Then edit terraform.tfvars and fill in your real values.
 # =============================================================================
 
-aws_region            = "us-east-1"
-environment           = "dev"
-db_instance_class     = "db.t3.micro"
+# AWS region to deploy into
+aws_region = "us-east-1"
+
+# Environment label used in all resource names (dev|staging|prod)
+environment = "dev"
+
+# RDS instance size. db.t3.micro is Free Tier eligible (750 hrs/month).
+# For prod: db.t3.small or larger for decent query throughput.
+db_instance_class = "db.t3.micro"
+
+# Number of running tasks per ECS service. 1 for dev (no redundancy).
+# For prod: 2+ for rolling deploys without downtime.
 service_desired_count = 1
 
-# Your GHCR registry prefix (your GitHub username or org)
+# GHCR registry prefix — e.g. ghcr.io/your-github-username
+# Images are pushed as: ghcr.io/your-username/medicore-{service-name}:latest
 ghcr_registry = "ghcr.io/YOUR_GITHUB_USERNAME"
 
-# Your GitHub repo slug for OIDC (owner/repo-name)
+# GitHub repo slug for the OIDC trust policy
+# Must match the repo that runs the GitHub Actions workflows
 github_repo = "YOUR_GITHUB_USERNAME/medicore"
 
-# Mistral API key — do not commit
-# Pass via: terraform apply -var="mistral_api_key=$MISTRAL_API_KEY"
-mistral_api_key = "REPLACE_ME"
+# mistral_api_key is NOT listed here — it's sensitive.
+# Pass it at apply time:
+#   terraform apply -var="mistral_api_key=$MISTRAL_API_KEY"
+# Or add it to terraform.tfvars like this (keep terraform.tfvars gitignored!):
+#   mistral_api_key = "your-key-here"

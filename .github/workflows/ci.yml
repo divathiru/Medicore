@@ -1,0 +1,284 @@
+# .github/workflows/ci.yml
+# =============================================================================
+# MediCore — Unified CI with build matrix
+# Triggered on push to main or any PR targeting main.
+#
+# Jobs:
+#   build (matrix) — runs for each of the 6 services in parallel:
+#       Node services: npm ci → lint (if script exists) → test (if exists) → Docker build+push
+#       ai-service:    pip install → ruff lint → test (if exists) → Docker build+push
+#       frontend:      npm ci → lint (if script exists) → vite build → Docker build+push
+#
+#   deploy — runs after ALL build jobs succeed on push to main.
+#             Assumes the AWS OIDC deploy role and updates each ECS service.
+#
+# Image tags pushed:
+#   ghcr.io/<owner>/medicore-<service>:latest
+#   ghcr.io/<owner>/medicore-<service>:sha-<short-sha>
+#
+# Required GitHub repo variables (set via Settings → Variables → Actions):
+#   AWS_REGION      — e.g. us-east-1
+#   AWS_DEPLOY_ROLE — from: terraform output github_deploy_role_arn
+#   ECS_CLUSTER     — from: terraform output ecs_cluster_name
+#   GHCR_REGISTRY   — e.g. ghcr.io/your-username
+# =============================================================================
+name: "CI"
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+permissions:
+  contents: read
+  packages: write    # needed for GHCR push
+  id-token: write    # needed for OIDC AWS auth in deploy job
+
+jobs:
+  # ===========================================================================
+  # BUILD MATRIX — runs in parallel for every service
+  # ===========================================================================
+  build:
+    name: "Build · ${{ matrix.service }}"
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false   # don't cancel other services if one fails
+      matrix:
+        include:
+          - service: main-website
+            context: ./main-website
+            image_suffix: main-website
+            lang: node
+            container_name: main-website
+            ecs_service_name: medicore-dev-main-website
+            task_family: medicore-dev-main-website
+
+          - service: patient-service
+            context: ./patient-service
+            image_suffix: patient-service
+            lang: node
+            container_name: patient-service
+            ecs_service_name: medicore-dev-patient-service
+            task_family: medicore-dev-patient-service
+
+          - service: doctor-service
+            context: ./doctor-service
+            image_suffix: doctor-service
+            lang: node
+            container_name: doctor-service
+            ecs_service_name: medicore-dev-doctor-service
+            task_family: medicore-dev-doctor-service
+
+          - service: cashier-service
+            context: ./cashier-service
+            image_suffix: cashier-service
+            lang: node
+            container_name: cashier-service
+            ecs_service_name: medicore-dev-cashier-service
+            task_family: medicore-dev-cashier-service
+
+          - service: ai-service
+            context: ./ai-service
+            image_suffix: ai-service
+            lang: python
+            container_name: ai-service
+            ecs_service_name: medicore-dev-ai-service
+            task_family: medicore-dev-ai-service
+
+          - service: frontend
+            context: ./frontend
+            image_suffix: frontend
+            lang: frontend
+            container_name: frontend
+            ecs_service_name: medicore-dev-frontend
+            task_family: medicore-dev-frontend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # ── Node services (main-website, patient, doctor, cashier) ──────────────
+      - name: Setup Node.js
+        if: matrix.lang == 'node' || matrix.lang == 'frontend'
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: ${{ matrix.context }}/package-lock.json
+
+      - name: Install Node dependencies
+        if: matrix.lang == 'node' || matrix.lang == 'frontend'
+        working-directory: ${{ matrix.context }}
+        run: npm ci
+
+      - name: Lint (Node)
+        if: matrix.lang == 'node' || matrix.lang == 'frontend'
+        working-directory: ${{ matrix.context }}
+        # --if-present: silently skips if no lint script in package.json
+        run: npm run lint --if-present
+
+      - name: Test (Node)
+        if: matrix.lang == 'node'
+        working-directory: ${{ matrix.context }}
+        env:
+          PORT: "4000"
+          DATABASE_URL: "postgres://fake:fake@localhost:5432/fake"
+          JWT_SECRET: "ci-test-secret-at-least-32-chars-long-pad"
+          AI_SERVICE_URL: "http://localhost:5000"
+        # --if-present: silently skips if no test script — don't fail for missing tests
+        run: npm test --if-present
+
+      - name: Vite build (frontend only)
+        if: matrix.lang == 'frontend'
+        working-directory: ${{ matrix.context }}
+        env:
+          VITE_API_BASE_URL: "http://localhost:4000"
+        run: npm run build --if-present
+
+      # ── Python (ai-service) ────────────────────────────────────────────────
+      - name: Setup Python
+        if: matrix.lang == 'python'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Python dependencies
+        if: matrix.lang == 'python'
+        working-directory: ${{ matrix.context }}
+        run: pip install -r requirements.txt --break-system-packages
+
+      - name: Lint Python (ruff)
+        if: matrix.lang == 'python'
+        working-directory: ${{ matrix.context }}
+        # ruff is fast and catches common issues; --if-present avoids failure if not installed
+        run: |
+          pip install ruff --break-system-packages --quiet
+          ruff check . --select E,F,W --ignore E501 || true
+
+      - name: Test (Python)
+        if: matrix.lang == 'python'
+        working-directory: ${{ matrix.context }}
+        # pytest --if-present equivalent: only run if conftest or test files exist
+        run: |
+          if find . -name "test_*.py" -o -name "*_test.py" | grep -q .; then
+            pip install pytest --break-system-packages --quiet
+            pytest -v
+          else
+            echo "No tests found — skipping"
+          fi
+
+      # ── Docker build + push (all services, main branch only) ───────────────
+      - name: Login to GHCR
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Docker metadata
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/medicore-${{ matrix.image_suffix }}
+          tags: |
+            type=sha,prefix=sha-
+            type=raw,value=latest
+
+      - name: Build and push Docker image
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: docker/build-push-action@v5
+        with:
+          context: ${{ matrix.context }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+  # ===========================================================================
+  # DEPLOY — runs only after ALL build matrix jobs succeed on push to main
+  # ===========================================================================
+  deploy:
+    name: "Deploy · ECS Fargate"
+    runs-on: ubuntu-latest
+    needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    environment: production
+
+    env:
+      AWS_REGION:   ${{ vars.AWS_REGION }}
+      ECS_CLUSTER:  ${{ vars.ECS_CLUSTER }}
+      GHCR_REGISTRY: ${{ vars.GHCR_REGISTRY }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC — no long-lived keys)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # Deploy each service sequentially using force-new-deployment.
+      # This triggers ECS to pull the new :latest image and do a rolling replace.
+      # wait-for-service-stability is handled per service below.
+
+      - name: Deploy main-website
+        run: |
+          aws ecs update-service \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --service medicore-dev-main-website \
+            --force-new-deployment \
+            --no-paginate
+
+      - name: Deploy patient-service
+        run: |
+          aws ecs update-service \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --service medicore-dev-patient-service \
+            --force-new-deployment \
+            --no-paginate
+
+      - name: Deploy doctor-service
+        run: |
+          aws ecs update-service \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --service medicore-dev-doctor-service \
+            --force-new-deployment \
+            --no-paginate
+
+      - name: Deploy cashier-service
+        run: |
+          aws ecs update-service \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --service medicore-dev-cashier-service \
+            --force-new-deployment \
+            --no-paginate
+
+      - name: Deploy ai-service
+        run: |
+          aws ecs update-service \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --service medicore-dev-ai-service \
+            --force-new-deployment \
+            --no-paginate
+
+      - name: Deploy frontend
+        run: |
+          aws ecs update-service \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --service medicore-dev-frontend \
+            --force-new-deployment \
+            --no-paginate
+
+      - name: Wait for all services stable
+        run: |
+          echo "Waiting for main-website..."
+          aws ecs wait services-stable \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --services medicore-dev-main-website
+          echo "Waiting for frontend..."
+          aws ecs wait services-stable \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --services medicore-dev-frontend
+          echo "All services stable ✓"

@@ -106,6 +106,8 @@ docker compose exec ai-service python scripts/ingest_seed_docs.py
 docker compose down -v && docker compose up --build
 ```
 
+> **S3 upload in local dev:** Patient file uploads require a real S3 bucket and AWS credentials in your shell (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION`, `S3_BUCKET_NAME`). Without them, the `/patients/me/summaries` endpoint returns 500 — all other endpoints work normally. See **Known Simplifications** below.
+
 ---
 
 ## Demo Credentials
@@ -169,47 +171,56 @@ uvicorn app.main:app --reload --port 5000
 
 ## CI/CD — GitHub Actions
 
-Each service has its own workflow in `.github/workflows/`:
+All CI is consolidated in a **single unified matrix workflow** (`.github/workflows/ci.yml`) that runs all 6 services in parallel:
 
-| Workflow                    | Trigger                    | Jobs                                     |
-|-----------------------------|----------------------------|------------------------------------------|
-| `ci-main-website.yml`       | push/PR to `main-website/` | lint → smoke `/health` → Docker → GHCR  |
-| `ci-patient-service.yml`    | push/PR to `patient-service/` | same pattern                          |
-| `ci-doctor-service.yml`     | push/PR to `doctor-service/`  | same pattern                          |
-| `ci-cashier-service.yml`    | push/PR to `cashier-service/` | same pattern                          |
-| `ci-ai-service.yml`         | push/PR to `ai-service/`   | lint (ruff) → smoke → Docker → GHCR     |
-| `ci-frontend.yml`           | push/PR to `frontend/`     | lint → Vite build → Docker → GHCR       |
-| `deploy-ecs.yml`            | after CI passes on `main`  | OIDC assume-role → register task def → update ECS service |
+| Workflow         | Trigger                   | Jobs                                                     |
+|------------------|---------------------------|----------------------------------------------------------|
+| `ci.yml`         | push/PR to `main`         | Build matrix: lint → test → Docker build+push → ECS deploy |
 
-**No long-lived AWS keys are stored in GitHub Secrets.** The deploy workflow uses OIDC federation to assume the `medicore-dev-github-deploy` IAM role provisioned by Terraform.
+Per-service CI files (`.github/workflows/ci-*.yml`) remain for per-path PR triggers.
+
+**No long-lived AWS keys are stored in GitHub Secrets.** The deploy job uses OIDC federation to assume the `medicore-dev-github-deploy` IAM role provisioned by Terraform.
+
+**After `terraform apply`, set these GitHub repo variables** (Settings → Variables → Actions):
+
+| Variable          | Value source                                |
+|-------------------|---------------------------------------------|
+| `AWS_REGION`      | e.g. `us-east-1`                           |
+| `AWS_DEPLOY_ROLE` | `terraform output github_deploy_role_arn`   |
+| `ECS_CLUSTER`     | `terraform output ecs_cluster_name`         |
+| `GHCR_REGISTRY`   | e.g. `ghcr.io/your-username`               |
 
 ---
 
 ## Deployment — AWS ECS Fargate
 
-Infrastructure is in `terraform/`. One Task Definition per service, one ECS Cluster.
+Infrastructure is in `terraform/` (split into separate files by resource type).
 
 ```bash
 cd terraform
 cp terraform.tfvars.example terraform.tfvars
-# Edit terraform.tfvars — set ghcr_registry, github_repo, etc.
+# Edit terraform.tfvars — fill in ghcr_registry, github_repo, etc.
 
 terraform init
 terraform plan -var="mistral_api_key=$MISTRAL_API_KEY"
 terraform apply -var="mistral_api_key=$MISTRAL_API_KEY"
 
-# After apply, grab the deploy role ARN and set it as a GitHub variable:
-terraform output github_deploy_role_arn
+# After apply: grab the outputs and configure GitHub
+terraform output alb_dns_name          # → your live app URL (http://...)
+terraform output github_deploy_role_arn # → paste into GitHub repo variable AWS_DEPLOY_ROLE
+terraform output ecs_cluster_name       # → paste into GitHub repo variable ECS_CLUSTER
+terraform output s3_bucket_name         # → confirm matches S3_BUCKET_NAME in patient-service
 ```
 
 Architecture provisioned:
 - **VPC** with public (ALB) + private (ECS + RDS) subnets across 2 AZs
-- **ALB** routing `/api/*, /auth/*` → main-website, everything else → frontend
-- **ECS Fargate** — one task definition per service, Cloud Map private DNS for inter-service comms
+- **ALB** with explicit listener rules routing all API paths (`/auth/*`, `/patients/*`, `/doctors/*`, `/cashier/*`, `/ai/*`, `/health`) → main-website; everything else → frontend
+- **ECS Fargate** — 6 task definitions; only main-website + frontend are ALB-registered; the other 4 are internal-only via Cloud Map DNS
 - **RDS PostgreSQL 16** in private subnet (pgvector extension enabled via schema.sql)
-- **AWS Secrets Manager** — `JWT_SECRET`, `DATABASE_URL`, `MISTRAL_API_KEY` injected at container start; never in env vars or task definition JSON
-- **CloudWatch Logs** — every ECS task uses the `awslogs` log driver; logs appear in `/ecs/medicore-dev/<service-name>`
-- **GitHub OIDC deploy role** — scoped to your repo, allows only `ecs:RegisterTaskDefinition`, `ecs:UpdateService`, and `iam:PassRole` for the two ECS roles
+- **S3** private bucket for patient file uploads (encrypted, public access blocked)
+- **AWS Secrets Manager** — `JWT_SECRET`, `DATABASE_URL`, `MISTRAL_API_KEY` injected at container start
+- **CloudWatch Logs** — one log group per service, 14-day retention
+- **GitHub OIDC deploy role** — scoped to your repo, `iam:PassRole` covers the default task role and the patient-specific S3-enabled task role
 
 ---
 
@@ -233,13 +244,15 @@ The following were **deliberately excluded** from this 5-day build. They appear 
 
 The following are deliberate engineering trade-offs made to fit the 5-day scope, not oversights:
 
-- **No retry queue on ai-service ingestion.** When a patient uploads a summary, the doctor-service and patient-service fire-and-forget a `POST /ingest/patient/:id` call. If ai-service is temporarily down, the chunk is lost. A production system would use an SQS queue as a buffer.
+- **No retry queue on ai-service ingestion.** When a patient uploads a summary, patient-service fires-and-forgets a `POST /ingest/patient/:id` call. If ai-service is temporarily down, the chunk is lost. A production system would use an SQS queue as a buffer.
 - **In-memory rate limiting.** The gateway uses `express-rate-limit` with the default in-memory store, which does not share state across multiple instances. A Redis-backed store (e.g. `rate-limit-redis`) is the production solution.
 - **No refresh tokens.** JWT is a simple 8h access token with no refresh mechanism. A production auth system would issue short-lived access tokens + long-lived refresh tokens stored server-side.
 - **Single NAT Gateway.** The Terraform config uses one NAT Gateway for cost reasons (dev). Production should use one NAT per AZ for availability.
 - **No HTTPS / TLS.** The ALB listener is HTTP only. Production requires an ACM certificate + HTTPS listener + HTTP→HTTPS redirect.
-- **Uploads on a single volume.** Patient summary uploads go to a Docker named volume (`uploads_data`). In ECS, this must be replaced with an S3 bucket.
-- **No pgvector HNSW index.** The embeddings table uses IVFFlat-style cosine similarity via `<=>`. For large corpora, an HNSW index (`CREATE INDEX ... USING hnsw`) gives much better recall/latency. Left as a v2 optimisation.
+- **S3 upload — no local testing.** Patient summary uploads use S3 (`@aws-sdk/client-s3`, `multer.memoryStorage`). In local docker-compose, this requires real AWS credentials and a real S3 bucket in the shell environment (`S3_BUCKET_NAME`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION`). Without them, the upload endpoint returns 500 but all other endpoints work normally. LocalStack integration is out of scope.
+- **No presigned URLs for file download.** The `file_url` field on uploaded summaries stores the S3 key, not a public URL. The frontend cannot display the raw file without a server-generated presigned GET URL. This endpoint is straightforward to add as a v2 feature (`GET /patients/me/summaries/:id/download`).
+- **No pgvector HNSW index.** The embeddings table uses IVFFlat-style cosine similarity via `<=>`. For large corpora, an HNSW index (`CREATE INDEX ... USING hnsw`) gives better recall/latency. Left as a v2 optimisation.
+- **Versioning off on S3 bucket.** Medical summaries are keyed by UUID — there’s no meaningful version history. Versioning would double storage cost. Deliberate simplification for this build.
 
 ---
 
