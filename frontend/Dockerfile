@@ -8,11 +8,11 @@ RUN npm install
 
 COPY . .
 
-# VITE_API_BASE_URL is baked in at build time.
-# In docker-compose we pass it as a build arg.
-ARG VITE_API_BASE_URL=http://localhost:4000
-ENV VITE_API_BASE_URL=$VITE_API_BASE_URL
-
+# NOTE: We intentionally do NOT set VITE_API_BASE_URL here.
+# The frontend uses relative paths (empty base URL) for all API calls.
+# Nginx in stage 2 proxies /auth/*, /patients/*, /doctors/*, /cashier/*, /ai/*
+# to main-website:4000 inside the Docker network. This means the compiled JS
+# bundle works correctly from ANY host/IP — no rebuild needed when the URL changes.
 RUN npm run build
 
 # ── Stage 2: Serve ───────────────────────────────────────────────────────────

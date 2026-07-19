@@ -68,6 +68,42 @@ BEGIN
   )
   ON CONFLICT (email) DO NOTHING;
   -- cashier role has no profile table — auth.users entry is sufficient.
-  RAISE NOTICE 'Seed complete: 2 doctors + 1 cashier inserted.';
+
+  -- ── Demo Patient: Alex Morgan ──────────────────────────────
+  -- Email: patient@medicore.dev  Password: devpass123
+  -- Hash: bcrypt cost 10 of 'devpass123' (same as other seed accounts)
+  INSERT INTO auth.users (id, email, password_hash, role)
+  VALUES (
+    '22222222-0000-0000-0000-000000000001',
+    'patient@medicore.dev',
+    '$2b$10$oJLt7ykHXhblaCdlcjDBGOg8lruIueVMHhUtndCWxwPYMI65TIICa',
+    'patient'
+  )
+  ON CONFLICT (email) DO NOTHING;
+
+  INSERT INTO patients.patients (id, full_name, dob, phone)
+  VALUES (
+    '22222222-0000-0000-0000-000000000001',
+    'Alex Morgan',
+    '1990-04-15',
+    '+1-555-0100'
+  )
+  ON CONFLICT (id) DO NOTHING;
+
+  -- Pre-book an appointment with Dr. Chen (today) so the demo
+  -- cashier can immediately process payment without booking first.
+  INSERT INTO appointments.appointments
+    (id, patient_id, doctor_id, scheduled_date, status)
+  VALUES (
+    '33333333-0000-0000-0000-000000000001',
+    '22222222-0000-0000-0000-000000000001',
+    '11111111-0000-0000-0000-000000000001',
+    CURRENT_DATE,
+    'booked'
+  )
+  ON CONFLICT (id) DO NOTHING;
+
+  RAISE NOTICE 'Seed complete: 2 doctors + 1 cashier + 1 demo patient + 1 appointment inserted.';
 END
 $$;
+

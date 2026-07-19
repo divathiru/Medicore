@@ -172,13 +172,16 @@ services:
 
   # ===========================================================
   # Frontend — React/Vite built by nginx  (port 5173 → 80)
+  # nginx.conf proxies /auth/*, /ai/*, /patients/*, /doctors/*,
+  # /cashier/* to main-website:4000 inside the Docker network.
+  # The compiled JS uses relative URLs — no hardcoded host.
   # ===========================================================
   frontend:
     build:
       context: ./frontend
       dockerfile: Dockerfile
-      args:
-        VITE_API_BASE_URL: http://localhost:4000
+      # NOTE: VITE_API_BASE_URL is intentionally NOT passed here.
+      # Relative paths + nginx proxy handle routing — works from any IP.
     restart: unless-stopped
     ports:
       - "5173:80"
@@ -193,3 +196,22 @@ services:
       timeout: 5s
       retries: 3
       start_period: 10s
+
+  # ===========================================================
+  # seed-ai — one-shot: runs ingest_seed_docs.py once, then exits.
+  # Populates public.embeddings with hospital info so the public
+  # chatbot has knowledge to answer from on first launch.
+  # restart: no  → runs once per `docker compose up`, never retried.
+  # ===========================================================
+  seed-ai:
+    build:
+      context: ./ai-service
+      dockerfile: Dockerfile
+    restart: "no"
+    env_file: .env
+    command: python scripts/ingest_seed_docs.py
+    depends_on:
+      ai-service:
+        condition: service_healthy
+    networks:
+      - medicore_net

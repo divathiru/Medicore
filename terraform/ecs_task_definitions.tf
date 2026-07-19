@@ -279,7 +279,11 @@ resource "aws_ecs_task_definition" "ai_service" {
     portMappings = [{ containerPort = 5000, protocol = "tcp" }]
 
     secrets = [
-      { name = "DATABASE_URL",    valueFrom = aws_secretsmanager_secret.db_url.arn },
+      # NOTE: ai-service uses a Python-specific DB URL secret (sslmode=require).
+      # psycopg v3 uses standard libpq sslmode values — "no-verify" is a Node pg
+      # alias and is rejected by psycopg as "invalid sslmode value".
+      # Node services use database-url (sslmode=no-verify); Python uses database-url-python (sslmode=require).
+      { name = "DATABASE_URL",    valueFrom = aws_secretsmanager_secret.db_url_python.arn },
       { name = "MISTRAL_API_KEY", valueFrom = aws_secretsmanager_secret.mistral_api_key.arn },
     ]
     environment = [
@@ -308,16 +312,22 @@ resource "aws_ecs_task_definition" "ai_service" {
 # frontend — React/Vite app served by nginx (port 80)
 #
 # What it does:
-#   Serves the pre-built React SPA. nginx config proxies /api/* calls back to
-#   main-website (in prod this is handled by ALB routing rules instead).
-#   The frontend itself is stateless — all data comes from the gateway API.
+#   Serves the pre-built React SPA. The frontend uses RELATIVE API paths
+#   (no hardcoded host). nginx.conf in the container proxies:
+#     /auth/*     → main-website.medicore-dev.local:4000
+#     /patients/* → main-website.medicore-dev.local:4000
+#     /doctors/*  → main-website.medicore-dev.local:4000
+#     /cashier/*  → main-website.medicore-dev.local:4000
+#     /ai/*       → main-website.medicore-dev.local:4000
+#   This means the compiled React bundle works from ANY host/IP/ALB DNS —
+#   no VITE_API_BASE_URL baked in at build time.
 #
-# Why no secrets:
-#   The frontend is a static build — all env vars are baked in at build time
-#   via VITE_API_BASE_URL docker build arg. No runtime secrets needed.
+# Why no secrets or VITE_API_BASE_URL:
+#   The frontend build intentionally omits VITE_API_BASE_URL so axios uses
+#   relative paths. nginx handles routing to main-website via Cloud Map DNS.
 #
-# Called by:  ALB (default action)
-# Calls:      main-website only (via browser → ALB → main-website listener rule)
+# Called by:  ALB (default action for all non-API paths)
+# Calls:      main-website only (via internal nginx proxy → Cloud Map DNS)
 # =============================================================================
 resource "aws_ecs_task_definition" "frontend" {
   family                   = "${local.name_prefix}-frontend"
