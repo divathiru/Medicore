@@ -100,11 +100,7 @@ export default function LoginPage() {
           <Link to="/signup" style={{ color: 'var(--teal-700)', fontWeight: 600 }}>Create account</Link>
         </div>
 
-        <div style={{ marginTop: '2rem', padding: '1rem', background: 'var(--teal-50)', borderRadius: 'var(--radius-md)', fontSize: '0.8125rem', color: 'var(--teal-800)' }}>
-          <strong>Demo accounts:</strong><br />
-          Doctor: dr.amelia.chen@medicore.dev / devpass123<br />
-          Cashier: cashier@medicore.dev / devpass123
-        </div>
+        
       </div>
     </div>
   )
