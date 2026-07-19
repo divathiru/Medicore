@@ -52,3 +52,20 @@ variable "mistral_api_key" {
   type      = string
   sensitive = true
 }
+
+variable "ghcr_pat" {
+  description = <<-EOT
+    GitHub Personal Access Token (classic) for ECS to pull images from GHCR.
+    Required scope: read:packages ONLY — do not grant write or repo access.
+    Generate at: github.com → Settings → Developer settings → Personal access tokens → Tokens (classic)
+    Pass at apply time: terraform apply -var="ghcr_pat=$GHCR_PAT"
+    Or add to terraform.tfvars (gitignored — never commit this value).
+
+    IMPORTANT: Only needed if any medicore-* GHCR package is Private.
+    If all 6 packages are set Public (step 4a), ECS pulls without credentials.
+    Keep configured anyway as defense-in-depth for future private packages.
+  EOT
+  type      = string
+  sensitive = true
+  default   = ""  # empty default so plan works without it when packages are public
+}

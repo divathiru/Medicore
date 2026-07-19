@@ -39,6 +39,9 @@ resource "aws_ecs_task_definition" "main_website" {
     image     = "${var.ghcr_registry}/medicore-main-website:latest"
     essential = true
     portMappings = [{ containerPort = 4000, protocol = "tcp" }]
+    # repositoryCredentials: only set when ghcr_pat is provided (private packages).
+    # When packages are Public (step 4a), ghcr_pat is empty and this key is omitted.
+    repositoryCredentials = var.ghcr_pat != "" ? { credentialsParameter = aws_secretsmanager_secret.ghcr_credentials[0].arn } : null
 
     secrets = [
       { name = "JWT_SECRET",   valueFrom = aws_secretsmanager_secret.jwt_secret.arn },
@@ -104,6 +107,7 @@ resource "aws_ecs_task_definition" "patient_service" {
     image     = "${var.ghcr_registry}/medicore-patient-service:latest"
     essential = true
     portMappings = [{ containerPort = 4001, protocol = "tcp" }]
+    repositoryCredentials = var.ghcr_pat != "" ? { credentialsParameter = aws_secretsmanager_secret.ghcr_credentials[0].arn } : null
 
     secrets = [
       { name = "JWT_SECRET",   valueFrom = aws_secretsmanager_secret.jwt_secret.arn },
@@ -162,6 +166,7 @@ resource "aws_ecs_task_definition" "doctor_service" {
     image     = "${var.ghcr_registry}/medicore-doctor-service:latest"
     essential = true
     portMappings = [{ containerPort = 4002, protocol = "tcp" }]
+    repositoryCredentials = var.ghcr_pat != "" ? { credentialsParameter = aws_secretsmanager_secret.ghcr_credentials[0].arn } : null
 
     secrets = [
       { name = "JWT_SECRET",   valueFrom = aws_secretsmanager_secret.jwt_secret.arn },
@@ -217,6 +222,7 @@ resource "aws_ecs_task_definition" "cashier_service" {
     image     = "${var.ghcr_registry}/medicore-cashier-service:latest"
     essential = true
     portMappings = [{ containerPort = 4003, protocol = "tcp" }]
+    repositoryCredentials = var.ghcr_pat != "" ? { credentialsParameter = aws_secretsmanager_secret.ghcr_credentials[0].arn } : null
 
     secrets = [
       { name = "JWT_SECRET",   valueFrom = aws_secretsmanager_secret.jwt_secret.arn },
@@ -277,6 +283,7 @@ resource "aws_ecs_task_definition" "ai_service" {
     image     = "${var.ghcr_registry}/medicore-ai-service:latest"
     essential = true
     portMappings = [{ containerPort = 5000, protocol = "tcp" }]
+    repositoryCredentials = var.ghcr_pat != "" ? { credentialsParameter = aws_secretsmanager_secret.ghcr_credentials[0].arn } : null
 
     secrets = [
       # NOTE: ai-service uses a Python-specific DB URL secret (sslmode=require).
@@ -343,6 +350,7 @@ resource "aws_ecs_task_definition" "frontend" {
     image     = "${var.ghcr_registry}/medicore-frontend:latest"
     essential = true
     portMappings = [{ containerPort = 80, protocol = "tcp" }]
+    repositoryCredentials = var.ghcr_pat != "" ? { credentialsParameter = aws_secretsmanager_secret.ghcr_credentials[0].arn } : null
 
     logConfiguration = {
       logDriver = "awslogs"

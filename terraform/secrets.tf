@@ -81,3 +81,44 @@ resource "aws_secretsmanager_secret_version" "db_url_python" {
   secret_string = "postgres://medicore:${random_password.db_password.result}@${aws_db_instance.postgres.address}:5432/medicore?sslmode=require"
   depends_on    = [aws_db_instance.postgres]
 }
+
+# =============================================================================
+# GHCR pull credentials for ECS Fargate (repositoryCredentials)
+#
+# ECS Fargate has no native credential path to GHCR the way it does to ECR.
+# GHCR packages default to PRIVATE — pulling a private image without credentials
+# results in a CannotPullContainerError: 401 Unauthorized.
+#
+# Fix (a — preferred): set all medicore-* packages to Public on github.com.
+#   Public packages need no credentials; this secret is then unused but harmless.
+#
+# Fix (b — defense-in-depth): provide a classic PAT with read:packages scope.
+#   ECS reads this secret at container start and uses it to authenticate the pull.
+#   The secret value must be JSON: {"username":"<github-user>","password":"<PAT>"}
+#
+# IMPORTANT: The PAT must be generated manually on github.com:
+#   Settings → Developer settings → Personal access tokens → Tokens (classic)
+#   Scope: read:packages ONLY. Never commit the token value.
+#   Pass at apply time: terraform apply -var="ghcr_pat=$GHCR_PAT"
+#
+# count=0 when ghcr_pat is empty (packages are public — no secret needed).
+# count=1 when ghcr_pat is set   (packages are private — secret is created).
+# =============================================================================
+resource "aws_secretsmanager_secret" "ghcr_credentials" {
+  count                   = var.ghcr_pat != "" ? 1 : 0
+  name                    = "${local.name_prefix}/ghcr-credentials"
+  recovery_window_in_days = 0
+  tags                    = { Name = "${local.name_prefix}-ghcr-credentials" }
+}
+
+resource "aws_secretsmanager_secret_version" "ghcr_credentials" {
+  count     = var.ghcr_pat != "" ? 1 : 0
+  secret_id = aws_secretsmanager_secret.ghcr_credentials[0].id
+  # ECS repositoryCredentials format: JSON with username + password (PAT)
+  # github.com username is extracted from ghcr_registry var (e.g. "ghcr.io/divathiru" → "divathiru")
+  secret_string = jsonencode({
+    username = split("/", var.ghcr_registry)[1]
+    password = var.ghcr_pat
+  })
+}
+

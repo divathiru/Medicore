@@ -100,7 +100,7 @@ export default function LoginPage() {
           <Link to="/signup" style={{ color: 'var(--teal-700)', fontWeight: 600 }}>Create account</Link>
         </div>
 
-        
+
       </div>
     </div>
   )

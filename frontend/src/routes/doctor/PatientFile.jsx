@@ -6,6 +6,39 @@ import LoadingSpinner from '../../components/LoadingSpinner.jsx'
 import ErrorMessage from '../../components/ErrorMessage.jsx'
 import PrescriptionForm from './PrescriptionForm.jsx'
 
+// Shared bullet formatter — identical to ChatWidget so both panels always match.
+// Lines starting with "- ", "* ", or "•" render as teal dot bullets.
+function formatBotMessage(text) {
+  const lines = text.split('\n')
+  return lines.map((line, i) => {
+    const bulletMatch = line.match(/^(\s*)([-*•])\s+(.+)/)
+    if (bulletMatch) {
+      const content = renderInline(bulletMatch[3])
+      return (
+        <div key={i} style={{ display: 'flex', alignItems: 'flex-start', gap: '0.5rem', marginTop: i === 0 ? 0 : '0.25rem' }}>
+          <span style={{
+            display: 'inline-block', width: 7, height: 7, borderRadius: '50%',
+            background: 'var(--teal-600)', flexShrink: 0, marginTop: '0.45em',
+          }} />
+          <span>{content}</span>
+        </div>
+      )
+    }
+    if (!line.trim()) return <div key={i} style={{ height: '0.4rem' }} />
+    return <div key={i}>{renderInline(line)}</div>
+  })
+}
+
+function renderInline(text) {
+  const parts = text.split(/(\*\*[^*]+\*\*)/)
+  return parts.map((part, i) => {
+    if (part.startsWith('**') && part.endsWith('**')) {
+      return <strong key={i}>{part.slice(2, -2)}</strong>
+    }
+    return part
+  })
+}
+
 export default function PatientFile() {
   const { appointmentId } = useParams()
   const navigate = useNavigate()
@@ -159,7 +192,9 @@ export default function PatientFile() {
                 </div>
               )}
               {aiMessages.map((m, i) => (
-                <div key={i} className={`ai-message ${m.role}`}>{m.text}</div>
+                <div key={i} className={`ai-message ${m.role}`}>
+                  {m.role === 'assistant' ? formatBotMessage(m.text) : m.text}
+                </div>
               ))}
               {aiLoading && <div className="ai-message assistant" style={{ opacity: 0.6 }}>Thinking…</div>}
               <div ref={aiBottomRef} />

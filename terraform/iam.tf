@@ -49,14 +49,16 @@ resource "aws_iam_role_policy" "ecs_execution_secrets" {
         "secretsmanager:GetSecretValue",
         "secretsmanager:DescribeSecret",
       ]
-      Resource = [
-        aws_secretsmanager_secret.jwt_secret.arn,
-        aws_secretsmanager_secret.db_url.arn,
-        aws_secretsmanager_secret.mistral_api_key.arn,
-      ]
+      # Covers all secrets in this deployment's namespace:
+      #   jwt-secret, database-url, database-url-python,
+      #   mistral-api-key, ghcr-credentials (when ghcr_pat is set)
+      # Using a prefix wildcard avoids having to enumerate every ARN and
+      # is still tightly scoped — no access to secrets outside medicore-dev/*.
+      Resource = "arn:aws:secretsmanager:${local.region}:${data.aws_caller_identity.current.account_id}:secret:${local.name_prefix}/*"
     }]
   })
 }
+
 
 # ── Default ECS Task Role (runtime identity for most services) ─────────────────
 # doctor-service, cashier-service, ai-service, main-website, frontend use this.

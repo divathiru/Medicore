@@ -276,3 +276,154 @@ jobs:
           service: medicore-dev-frontend
           cluster: ${{ env.ECS_CLUSTER }}
           wait-for-service-stability: true
+
+  # ---------------------------------------------------------------------------
+  # Seed-doc ingestion — runs automatically after every successful ai-service
+  # deploy. Uses ecs run-task with a command override so the same ai-service
+  # image runs ingest_seed_docs.py as a one-off Fargate task inside the VPC.
+  #
+  # Why approach (a) / ecs run-task:
+  #   - Reuses the existing ai-service task definition (same IAM role, same
+  #     DATABASE_URL + MISTRAL_API_KEY secrets, same VPC/subnet/SG).
+  #   - No new infrastructure — no bastion, no RDS SG changes, no new roles.
+  #   - The script is already idempotent: it skips files whose source_file
+  #     already exists in public.embeddings, so re-running on an unchanged
+  #     deploy is a no-op (0 inserted / N skipped / 0 failed).
+  #   - Any new .md/.txt/.pdf dropped into seed-docs/ and committed to main
+  #     will be embedded automatically on the next push — zero manual steps.
+  # ---------------------------------------------------------------------------
+  ingest-seed-docs:
+    name: Ingest seed docs into public RAG corpus
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    environment: production
+    needs: [deploy-ai-service]  # wait for the fresh ai-service image to be stable first
+
+    steps:
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # ── Resolve network config from the live ai-service ECS service ──────────
+      - name: Resolve VPC subnet and security group from live ai-service
+        id: network
+        run: |
+          # Read the network config from the currently running ai-service task
+          TASK_ARN=$(aws ecs list-tasks \
+            --cluster "$ECS_CLUSTER" \
+            --service-name medicore-dev-ai-service \
+            --query 'taskArns[0]' --output text)
+
+          SUBNET=$(aws ecs describe-tasks \
+            --cluster "$ECS_CLUSTER" --tasks "$TASK_ARN" \
+            --query 'tasks[0].attachments[0].details[?name==`subnetId`].value' \
+            --output text)
+
+          SG=$(aws ecs describe-tasks \
+            --cluster "$ECS_CLUSTER" --tasks "$TASK_ARN" \
+            --query 'tasks[0].attachments[0].details[?name==`networkInterfaceId`].value' \
+            --output text)
+
+          # Fall back to querying the service's network config directly
+          SERVICE_CONFIG=$(aws ecs describe-services \
+            --cluster "$ECS_CLUSTER" \
+            --services medicore-dev-ai-service \
+            --query 'services[0].networkConfiguration.awsvpcConfiguration' \
+            --output json)
+
+          SUBNET=$(echo "$SERVICE_CONFIG" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['subnets'][0])")
+          SG=$(echo "$SERVICE_CONFIG" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['securityGroups'][0])")
+
+          echo "subnet=$SUBNET" >> "$GITHUB_OUTPUT"
+          echo "sg=$SG"         >> "$GITHUB_OUTPUT"
+          echo "Resolved: subnet=$SUBNET  sg=$SG"
+
+      # ── Get the latest ai-service task definition ARN ─────────────────────────
+      - name: Get ai-service task definition ARN
+        id: taskdef
+        run: |
+          TASK_DEF_ARN=$(aws ecs describe-task-definition \
+            --task-definition medicore-dev-ai-service \
+            --query 'taskDefinition.taskDefinitionArn' --output text)
+          echo "arn=$TASK_DEF_ARN" >> "$GITHUB_OUTPUT"
+          echo "Task def: $TASK_DEF_ARN"
+
+      # ── Launch the one-off ingestion task ─────────────────────────────────────
+      - name: Run ingest_seed_docs.py as one-off ECS Fargate task
+        id: run-task
+        run: |
+          TASK_ARN=$(aws ecs run-task \
+            --cluster "$ECS_CLUSTER" \
+            --task-definition "${{ steps.taskdef.outputs.arn }}" \
+            --launch-type FARGATE \
+            --network-configuration "awsvpcConfiguration={
+              subnets=[${{ steps.network.outputs.subnet }}],
+              securityGroups=[${{ steps.network.outputs.sg }}],
+              assignPublicIp=DISABLED
+            }" \
+            --overrides '{
+              "containerOverrides": [{
+                "name": "ai-service",
+                "command": ["python", "scripts/ingest_seed_docs.py"]
+              }]
+            }' \
+            --query 'tasks[0].taskArn' --output text)
+
+          echo "task_arn=$TASK_ARN" >> "$GITHUB_OUTPUT"
+          echo "Ingestion task launched: $TASK_ARN"
+
+      # ── Wait for the task to finish and check exit code ───────────────────────
+      - name: Wait for ingestion task to complete
+        run: |
+          TASK_ARN="${{ steps.run-task.outputs.task_arn }}"
+          echo "Waiting for task to stop: $TASK_ARN"
+
+          # Poll every 15 seconds, timeout after 10 minutes (40 attempts)
+          for i in $(seq 1 40); do
+            STATUS=$(aws ecs describe-tasks \
+              --cluster "$ECS_CLUSTER" \
+              --tasks "$TASK_ARN" \
+              --query 'tasks[0].lastStatus' --output text)
+            echo "  Attempt $i: status=$STATUS"
+            if [ "$STATUS" = "STOPPED" ]; then
+              break
+            fi
+            sleep 15
+          done
+
+          if [ "$STATUS" != "STOPPED" ]; then
+            echo "ERROR: Task did not stop within 10 minutes."
+            exit 1
+          fi
+
+          # Check container exit code
+          EXIT_CODE=$(aws ecs describe-tasks \
+            --cluster "$ECS_CLUSTER" \
+            --tasks "$TASK_ARN" \
+            --query 'tasks[0].containers[0].exitCode' --output text)
+
+          echo "Ingestion task exit code: $EXIT_CODE"
+
+          if [ "$EXIT_CODE" != "0" ]; then
+            echo "ERROR: Ingestion task failed with exit code $EXIT_CODE"
+            echo "Check CloudWatch logs at: /ecs/medicore-dev/ai-service"
+            exit 1
+          fi
+
+          echo "✅ Seed-doc ingestion completed successfully."
+
+      # ── Print the ingestion log tail from CloudWatch ──────────────────────────
+      - name: Print ingestion output from CloudWatch
+        if: always()
+        run: |
+          TASK_ID=$(echo "${{ steps.run-task.outputs.task_arn }}" | awk -F/ '{print $NF}')
+          LOG_STREAM="ecs/ai-service/${TASK_ID}"
+          echo "Fetching logs from: /ecs/medicore-dev/ai-service  stream: $LOG_STREAM"
+          aws logs get-log-events \
+            --log-group-name "/ecs/medicore-dev/ai-service" \
+            --log-stream-name "$LOG_STREAM" \
+            --limit 50 \
+            --query 'events[*].message' --output text 2>/dev/null \
+            || echo "(log stream not yet available — check CloudWatch manually)"

@@ -1,7 +1,45 @@
 import { useState, useRef, useEffect } from 'react'
 import { aiApi } from '../api/ai.js'
 
+// Renders the AI's markdown-style text with teal dot bullets and bold support.
+// Applied only to bot messages — user messages always render as plain text.
+function formatBotMessage(text) {
+  const lines = text.split('\n')
+  return lines.map((line, i) => {
+    // List item: lines starting with "- ", "* ", or "• "
+    const bulletMatch = line.match(/^(\s*)([-*•])\s+(.+)/)
+    if (bulletMatch) {
+      const content = renderInline(bulletMatch[3])
+      return (
+        <div key={i} style={{ display: 'flex', alignItems: 'flex-start', gap: '0.5rem', marginTop: i === 0 ? 0 : '0.25rem' }}>
+          <span style={{
+            display: 'inline-block', width: 7, height: 7, borderRadius: '50%',
+            background: 'var(--teal-600)', flexShrink: 0, marginTop: '0.45em',
+          }} />
+          <span>{content}</span>
+        </div>
+      )
+    }
+    // Empty lines become a small spacer
+    if (!line.trim()) return <div key={i} style={{ height: '0.4rem' }} />
+    // Normal line
+    return <div key={i}>{renderInline(line)}</div>
+  })
+}
+
+// Converts **bold** segments within a line to <strong> nodes.
+function renderInline(text) {
+  const parts = text.split(/(\*\*[^*]+\*\*)/)
+  return parts.map((part, i) => {
+    if (part.startsWith('**') && part.endsWith('**')) {
+      return <strong key={i}>{part.slice(2, -2)}</strong>
+    }
+    return part
+  })
+}
+
 const WELCOME = { role: 'bot', text: "Hi! I'm MediCore's virtual assistant. Ask me about our departments, doctors, or how to book an appointment." }
+
 
 export default function ChatWidget() {
   const [open, setOpen] = useState(false)
@@ -50,7 +88,9 @@ export default function ChatWidget() {
 
           <div className="chat-messages">
             {messages.map((m, i) => (
-              <div key={i} className={`chat-message ${m.role}`}>{m.text}</div>
+              <div key={i} className={`chat-message ${m.role}`}>
+                {m.role === 'bot' ? formatBotMessage(m.text) : m.text}
+              </div>
             ))}
             {loading && <div className="chat-message bot" style={{ opacity: 0.6 }}>Thinking…</div>}
             <div ref={bottomRef} />
