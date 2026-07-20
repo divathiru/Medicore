@@ -1,9 +1,5 @@
 # MediCore
 > End-to-end hospital appointment management platform — 5-day scoped solo build.
-
-[![CI · main-website](https://github.com/YOUR_USERNAME/medicore/actions/workflows/ci-main-website.yml/badge.svg)](https://github.com/YOUR_USERNAME/medicore/actions/workflows/ci-main-website.yml)
-[![CI · ai-service](https://github.com/YOUR_USERNAME/medicore/actions/workflows/ci-ai-service.yml/badge.svg)](https://github.com/YOUR_USERNAME/medicore/actions/workflows/ci-ai-service.yml)
-
 ---
 
 ## Architecture Summary
@@ -256,12 +252,4 @@ The following are deliberate engineering trade-offs made to fit the 5-day scope,
 
 ---
 
-## Day-by-Day Build Log
 
-| Day | Delivered                                                                                        |
-|-----|--------------------------------------------------------------------------------------------------|
-| 1   | DB schema + seed data, main-website auth + JWT + gateway skeleton, docker-compose base           |
-| 2   | patient-service, doctor-service, cashier-service — all routes, RBAC, zod validation             |
-| 3   | React/Vite frontend — public marketing page, login/signup, auth context                          |
-| 4   | Patient workspace (book appointment, upload summaries) + Doctor workspace (queue, prescriptions) |
-| 5   | ai-service (FastAPI, dual RAG pipelines, Mistral, prompt-injection defense), CI/CD, Terraform    |
