@@ -1,5 +1,5 @@
 # MediCore
-> End-to-end hospital appointment management platform — 5-day scoped solo build.
+> End-to-end hospital appointment management platform
 ---
 
 ## Architecture Summary
